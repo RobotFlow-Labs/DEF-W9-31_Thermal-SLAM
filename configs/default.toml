@@ -1,0 +1,49 @@
+[model]
+name = "thermal_depth_net"
+backbone = "simple_cnn"
+recurrent = "convgru" # convgru|reservoir|none
+use_trefnet = true
+pretrained_backbone = false
+in_channels = 1
+hidden_channels = 128
+recurrent_layers = 1
+
+[data]
+root_dir = ""
+train_list = ""
+val_list = ""
+test_list = ""
+seq_len = 5
+stride = 1
+height = 256
+width = 320
+return_last_only = true
+use_percentile_stretch = false
+percentile = 5.0
+use_clahe = false
+clahe_clip = 3.0
+
+[train]
+epochs = 20
+batch_size = 4
+workers = 2
+lr = 0.0002
+lr_min = 0.000001
+weight_decay = 0.0
+w_silog = 0.9
+w_ssim = 0.4
+w_order = 0.1
+w_smooth = 0.1
+temporal_lambda = 0.1
+use_silog = true
+
+[infer]
+checkpoint = ""
+input_dir = ""
+output_dir = "outputs"
+decode_all = false
+
+[slam]
+percent_low = 5.0
+percent_high = 95.0
+invert_colormap = true

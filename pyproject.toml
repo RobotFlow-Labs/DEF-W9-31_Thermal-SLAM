@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anima-thermal-slam"
+version = "0.1.0"
+description = "Thermal image refinement and recurrent depth estimation for thermal-only ORB-SLAM3"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "AIFLOW LABS" }
+]
+dependencies = [
+  "numpy>=1.24",
+  "opencv-python>=4.8",
+  "torch>=2.1",
+  "tomli>=2.0; python_version < '3.11'",
+  "fastapi>=0.111",
+  "uvicorn>=0.30",
+  "pydantic>=2.7"
+]
+
+[project.optional-dependencies]
+train = [
+  "timm>=1.0.0",
+  "tensorboard>=2.14"
+]
+test = [
+  "pytest>=8.0"
+]
+
+[project.scripts]
+thermal-slam-train = "anima_thermal_slam.train:main"
+thermal-slam-infer = "anima_thermal_slam.infer:main"
+thermal-slam-api = "anima_thermal_slam.api:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/anima_thermal_slam"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

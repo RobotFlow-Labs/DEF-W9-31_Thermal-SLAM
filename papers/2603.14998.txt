@@ -1,0 +1,660 @@
+                                                        Thermal Image Refinement with Depth Estimation using
+                                                           Recurrent Networks for Monocular ORB-SLAM3
+                                            Hürkan Şahin1 , Huy Xuan Pham2 , Van Huyen Dang1 , Alper Yegenoglu1 , and Erdal Kayacan1
+
+                                                                                                                                                           Depth Estimation                                                               SLAM
+                                            Abstract— Autonomous navigation in GPS-denied and visu-
+                                                                                                                                                            Thermal Refinement Network(T-RefNet)
+                                         ally degraded environments remains challenging for unmanned
+                                         aerial vehicles (UAVs). To this end, we investigate the use of                                 Input                     ReLU              ReLU             ReLU             Sig.               ORB Features
+                                         a monocular thermal camera as a standalone sensor on a                                                           Input             8 Ch.      16 Ch.                 8 Ch.      Output
+                                                                                                                     16-bit Thermal                      (H,W)              3x3         3x3                   3x3        (H,W)
+                                         UAV platform for real-time depth estimation and simultaneous               Image Sequence
+                                         localization and mapping (SLAM). To extract depth information
+
+
+
+
+arXiv:2603.14998v1 [cs.CV] 16 Mar 2026
+                                         from thermal images, we propose a novel pipeline employ-                                                    Backprop.                                            AGC
+                                         ing a lightweight supervised network with recurrent blocks
+                                         (RBs) integrated to capture temporal dependencies, enabling                                                                            Enhanced                          8-bit RGB
+                                                                                                                                                                              Thermal Image                     Thermal Image
+                                         more robust predictions. The network combines lightweight                                                                                                                                       ORB-SLAM3
+                                         convolutional backbones with a thermal refinement network                               Depth Estimation
+                                                                                                                                            s     Network
+                                                                                                                                                     Across Time
+                                         (T-RefNet) to refine raw thermal inputs and enhance feature
+                                                                                                                                         Latent S.                Readout
+                                         visibility. The refined thermal images and predicted depth                                                  Recurrent                             Output
+                                                                                                                              Encoder                                       Decoder
+                                                                                                                                                      Blocks
+                                         maps are integrated into ORB-SLAM3, enabling thermal-
+                                                                                                                                                                                                                 Predicted
+                                         only localization. Unlike previous methods, the network is                                                                                                             Depth Image
+                                         trained on a custom non-radiometric dataset, obviating the                                                  Backprop.
+                                         need for high-cost radiometric thermal cameras. Experimental
+                                                                                                                                          Loss Function
+                                         results on datasets and UAV flights demonstrate competitive                                                                                                                                     Trajectory &
+                                                                                                                                             (ℒtotal )
+                                         depth accuracy and robust SLAM performance under low-                                                                                                                                                KFs
+                                                                                                                                                                                                              GT Depth Image
+                                         light conditions. On the radiometric VIVID++ (indoor–dark)                                                                           Recurrent Blocks
+                                         dataset, our method achieves an absolute relative error of                                                                                                       Latent Space       Reservoir        Readout
+
+
+                                                                                                                                                                                           Reservoir C.
+                                                                                                                                                            X          +
+
+
+
+                                                                                                                    ConvGRU
+                                         approximately 0.06, compared to baselines exceeding 0.11. In                             conv conv
+                                                                                                                                                             1-        X
+                                                                                                                                          conv
+                                         our non-radiometric indoor set, baseline errors remain above                              σ                 X
+                                                                                                                                                            σ      tanh
+                                         0.24, whereas our approach remains below 0.10. Thermal-only                              conv
+                                                                                                                                                                                                             Excitatory neuron      Inhibitory neuron
+                                         ORB-SLAM3 maintains a mean trajectory error under 0.4 m.
+                                            Index Terms— Thermal imaging, Thermal-to-depth estima-
+                                         tion, Recurrent neural networks, UAV, SLAM                                Fig. 1.    Overview of the proposed thermal depth estimation pipeline.
+                                                                                                                   A raw 16-bit long-wave infrared (LWIR) image is first enhanced by the
+                                                                                                                   T-RefNet module, producing both an enhanced input for depth prediction
+                                                                 I. I NTRODUCTION                                  and a color-mapped image for robust ORB-SLAM3 feature extraction.
+                                                                                                                   The encoder backbone extracts multi-scale features, which are processed
+                                            In recent decades, research on autonomous UAVs has                     by RBs (ConvGRU [9] or reservoir computing (RC) [10]) to enforce
+                                         accelerated, broadening their range of applications, including            temporal consistency. Finally, the decoder outputs dense depth maps and
+                                         environmental monitoring [1], [2], infrastructure inspection              enhanced thermal images integrated into ORB-SLAM3 [11] for robust
+                                                                                                                   feature extraction and metric-scale, temporally consistent tracking.
+                                         [3], [4], and disaster response [5]. In search and res-
+                                         cue missions, rescue robots and UAVs can rapidly access
+                                         hazardous or confined spaces, reduce risks to responders,                 allows detecting infrared radiation without requiring light
+                                         and use advanced sensors for monitoring and localization,                 exposure, enabling penetration through smoke, dust, or haze.
+                                         thereby enhancing situational awareness and mission success                  Although beneficial under degraded conditions, thermal
+                                         [6]. Recent advances in autonomous aerial navigation favor                cameras pose distinct challenges for reliable SLAM inte-
+                                         lightweight, low-cost cameras over LiDAR, yet maintaining                 gration [8]. The 14/16-bit high dynamic range of thermal
+                                         robustness in degraded or dark conditions remains a chal-                 camera conflicts with 8-bit vision algorithms, automatic
+                                         lenge. Thermal-infrared cameras thus provide key advantages               gain control (AGC) causes temporal inconsistencies, non-
+                                         under degraded conditions [7], as their working principle                 uniformity correction (NUC) interrupts streams, and low
+                                                                                                                   texture hampers feature detection. These factors necessitate
+                                           *This work was partially supported by the Horizon Europe Grant Agree-
+                                         ment No. 101136056 and No. 101070405, and Independent Research Fund
+                                                                                                                   specialized adaptation of thermal imagery for robust SLAM.
+                                         Denmark, DFF-Research Project 1, with case number: 2035-00052B.           To handle these challenges, we propose a novel framework
+                                           1 Hürkan Şahin, Van Huyen Dang, Alper Yegenoglu, and Erdal Kay-
+                                                                                                                   (Fig. 1) that leverages recurrent thermal-to-depth modeling
+                                         acan are with the Automatic Control Group (RAT), Paderborn Uni-
+                                         versity, 33098 Paderborn, Germany {hursah, van.huyen.dang,
+                                                                                                                   for monocular depth estimation from thermal imagery. The
+                                         alper.yegenoglu, erdal.kayacan}@upb.de                                    enhanced thermal images and reconstructed depth maps
+                                           2 Huy Xuan Pham is with the Department of Electrical and Computer
+                                                                                                                   provide metric scale and temporally consistent priors that
+                                         Engineering, Aarhus University, 8000 Aarhus C, Denmark, and also with     can be directly integrated into ORB-SLAM3, improving
+                                         Upteko ApS, Denmark huy.xuan@upteko.com
+                                           † Our dataset and source code are publicly available at https://        initialization, mapping accuracy, and real-time tracking for
+                                         hurkansah.github.io/thermal-depth-orbslam3/.                              autonomous UAV navigation under extreme conditions.
+  The key contributions of this paper are as follows:                                                      The remainder of this paper is organized as follows. Sec-
+  • We propose a lightweight framework, T-RefNet, that                                                  tion II summarizes related work, while Section III provides
+    leverages a recurrent unit to enhance thermal-to-depth                                              a brief overview of our methodology. Section IV details the
+    conversion. Our framework can use ResNet [17], Effi-                                                experimental setup, dataset, and real-time results. Finally,
+    cientNet [18], and MobileNet [19] to serve as a back-                                               conclusions are presented in Section V.
+    bone, combined with recurrent architectures: ConvGRU
+                                                                                                                                             II. R ELATED WORK
+    [20] and reservoir computing (RC) [10] to improve
+    feature visibility and enforce temporal consistency in                                                 The literature presents a wide range of thermal-based
+    low-contrast and non-radiometric thermal imagery.                                                   SLAM and visual odometry methods. As illustrated in Fig. 2,
+  • We propose a non-radiometric thermal–depth UAV                                                      these approaches adopt diverse strategies to overcome the
+    dataset to evaluate our framework, alongside existing                                               inherent challenges of thermal imaging, thereby enabling
+    radiometric public datasets such as VIVID++ [21].                                                   robust navigation in GPS-denied and visually degraded en-
+  • A comprehensive experimental study, including real-                                                 vironments.
+    world experiments, is conducted to illustrate reliable                                                 A feature-based monocular SLAM framework is proposed
+    performance in a thermal-only robot localization task                                               in [12] to address challenges in dynamic and visually de-
+    across diverse trajectories and illumination settings,                                              graded environments, combining thermal image denoising,
+    including fully dark environments where RGB-based                                                   semantic segmentation, and hybrid point-line tracking to
+    SLAM typically fails.                                                                               improve robustness and accuracy. A fully self-supervised
+
+                          a) MonoThermal-SLAM [12]                                                                               c) Thermal-Depth odometry [14]
+             Vehicle              Camera          Dataset                   Network                    Vehicle                    Camera                   Dataset                        Network
+  Ground-based platforms         InfiRay      Custom dataset     Filtering:Yolo                 Handheld and small              MS: Optris PI Multi-Spectral dataset and        Semi-direct VO with KLT
+  tested in in/out door,         IR-          with 180,000+      Denoising:FFDNet               indoor robot                    VIVID++:      VIVID++ ,"office" sequences       tracking TEASER++ point
+  driving scenarios              Pilot640     thermal images     SLAM:ORB                                                       Flir A65      for NUC events                    cloud during NUC.
+                                            Framework                                                                                             Framework
+                   Denoising           Static Feature Selection                                                                                   Motion Estimation
+                     NUC                                                                                                  Direct Img.      Feature      Pose-                        Yes Local
+                                       Point Feature
+                                                                                                                                                                           KF
+        IR                                                   Epipolar          Initialization                             Alignment         Track      only BA                            BA
+      Image         CLAHE               Line Feature
+                                                            Constraint           Point Init.
+                                         Semantic
+                    FFDNet                                                       Line Init.                          IR Image
+                                       Segmentation                                                                                                                           Yes
+         No
+                                                                                     No                         Depth Image
+                                                                                                                                                           Mapping
+         Yes                                Tracking                            Init.?
+                                                                                                                                            Depth        Feature         Depth
+       New                                   Local                    Yes
+                               Track                    KF?                                                                                Warping      Extraction     Value Retr.
+       KF                                     Map
+
+                                           Local Mapping                                                                                         NUC Handling
+                                                                                                                                                                       NUC or
+                         Cull           Create New     Point Local                                                      Tracking         PC         PC               Track Loss ?
+                                                                                   Cull                                 Recovery        Regis.      Gen.       Yes
+          Insert         Points           Points          Opt.
+                                                                                Redundant
+           KF            Cull           Create New          Line Local          KeyFrames
+                         Lines             Lines               Opt.
+                                                                                                                                        d) Thermal voyager [15]
+                                                                                                     Vehicle                    Camera(s)                   Dataset                       Network
+                                              Loop Closing
+                                                                                                Drive-by-wire car        RGB: ZED2           Custom dataset 45,000      TrajNet(ResNet50/101)
+           Loop           Compute            Loop         Optimize
+                                                                               Global BA        (AGV)                    Thermal: FLIR A325 frames collected in parking trajectory from thermal
+          Detection        Sim(3)           Fusion     Essential Graph
+                                                                                                                                            lot circuits                input
+                                                                                                                                                  Framework
+                           b) ThermalMonoDepth [13]
+                Dataset                                         Network                                                                               Actuators                                     Throttle
+  VIVID dataset which include both          Self-supervised depth and pose networks based on                           (250,2)           MPC
+                                                                                                                                                       Steering
+
+                                                                                                           Trajnet
+  indoor and outdoor handheld data          ResNet18 encoder+Monodepthv2 decoders;            IR /                                                                       Comma          CAN          Brake
+  and driving data                          trained only on thermal images                   RGB                                                       Throttle          Panda
+                                            Framework                                                                   Trajectory                      Brake
+                                                                                                                                         Cache                                                       Steer
+                                        Temp. Cons. and                     High Contrast
+                                   Info. Maximized Mapping                  Thermal Image
+                                                                                (Iteh)                                  e) Practical infrared visual odometry [16]
+      Raw Thermal                 Feature      Depth        Depth Map                                 Vehicle                         Camera(s)                              Dataset
+       Image (It)                 Encoder     Decoder          Dt                               Ground vehicle (John Thermoteknix Miricle 307 K             Custom outdoor dataset collected in a park
+                                                                                Lrec            Deere Gator)         (640×480, LWIR                         using thermal and visible cameras
+                                                                                                                                                  Framework
+    Raw Thermal                   Feature  Pose                Pose             warp
+                                                               Tt→s                                Thermal Image                  Road Region           Feature            Monocular                Pose
+     Image (Is)                   Encoder Decoder
+                                                                                                    Acquisition                   Segmentation          Detection            VO                  Integration
+                                                                            High Contrast
+                                       Temp. Cons. and                      Thermal Image                                                        NUC Trigger
+                                  Info. Maximized Mapping                       (Iseh)                                                           Management
+
+
+Fig. 2. Recent thermal navigation frameworks found in the literature span ground, handheld, and indoor platforms, across datasets from urban driving
+to parking-lot and outdoor road scenes. Representative approaches include feature/semantics-aware tracking and point–line SLAM [11], self-supervised
+depth–ego-motion [12], NUC handling [11,13,15], LWIR-based trajectory prediction with MPC [14], and road-segmentation–based scale recovery [15].
+learning approach for estimating depth and ego-motion from                            7
+monocular thermal video is proposed in [13], introducing a                                             20/ C
+                                                                                                       80/ C
+temporally consistent mapping technique to enhance contrast                           6                140/ C
+
+
+
+
+                                                                  Pixel value # 104
+and structural information. A semi-direct VO system that                                               Non-radiometric
+                                                                                      5
+fuses raw thermal and depth images with a dedicated NUC
+                                                                                                                             i-) Raw thermal   ii-) Smoothed
+handling module for sensor disruption recovery is proposed                            4
+in [14]. An end-to-end navigation pipeline using LWIR
+                                                                                      3
+imagery and the deep learning model TrajNet for trajectory
+prediction under model predictive control is proposed in [15],                        2
+enabling reliable nighttime operation. Finally, a monocular                           -20       0      20     40       60
+                                                                                            Camera temperature (/ C)           iii-) CLAHE     iv-) T-RefNet
+thermal visual odometry method for outdoor environments
+is proposed in [16], addressing scale ambiguity through road      (a) Radiometric and non-radiometric                       (b) Thermal enhancement techniques
+segmentation and mitigating NUC-induced pose estimation           Fig. 3.    Comparison of the thermal image preprocessing methods. (a)
+failures via a predictive trigger strategy.                       Radiometric vs. non-radiometric thermal cameras at different TBB values.
+                                                                  Solid lines represent radiometric outputs, while dashed lines indicate non-
+   The mentioned works highlight diverse strategies for ad-       radiometric behavior.1 (b) Thermal image enhancement techniques: i) Raw
+dressing key challenges in thermal imaging, including low         input suffers from noise that disrupts gradients; ii) Gaussian smoothing re-
+                                                                  duces noise but blurs edges; iii) CLAHE boosts local contrast but introduces
+texture, NUC interruptions, and dynamic object interfer-          spurious keypoints; iv) T-RefNet preserves edges while denoising, yielding
+ence, while extending navigation capabilities to low-light        stable features for SLAM.
+and GPS-denied environments. Our contribution diverges
+from these prior works in two ways. First, our approach
+simultaneously generates dense depth maps and enhances            A. Radiometric and non-radiometric thermal camera
+thermal images, enabling metric scale recovery and allow-            Thermal imaging systems are either radiometric, deliver-
+ing for direct integration into existing SLAM frameworks          ing calibrated per-pixel temperatures for quantitative anal-
+without modification. Second, we present a non-radiometric        ysis, or non-radiometric, providing only relative contrast.
+thermal–depth UAV dataset, demonstrating robustness in            Non-radiometric outputs are auto-scaled by frame content
+fully dark indoor environments where conventional RGB-            and internal temperature, so pixel values lack consistent
+based methods fail. By incorporating recurrent modeling for       physical meaning [22]. On the other hand, non-radiometric
+temporal consistency and ensuring real-time deployment on         thermal cameras are low-cost, more accessible, and do not
+embedded hardware, our framework emphasizes both the              require continuous thermal calibration, while still providing
+practical applicability and generalizability of thermal-based     sufficient relative contrast for navigation-focused tasks.
+navigation.                                                          Figure 3a compares pixel responses of radiometric and
+                                                                  non-radiometric cameras across varying target blackbody
+                    III. M ETHODOLOGY                             (TBB) temperatures. Radiometric thermal cameras produce
+                                                                  consistent, near-linear outputs, enabling temperature-aware
+   Non-radiometric thermal imagery presents unique chal-          preprocessing such as contrast limited adaptive histogram
+lenges for depth estimation and SLAM, including low con-          equalization (CLAHE) or adaptive thresholds. By contrast,
+trast, high dynamic range, and weak structural cues that hin-     non-radiometric cameras re-map intensities frame by frame,
+der reliable feature extraction. To overcome these limitations,   causing histogram shifts, abrupt jumps with hot/cold regions,
+we propose a lightweight preprocessing network, T-RefNet,         and unstable normalization.
+that refines thermal inputs and enhances their structural visi-      To enhance thermal imagery for downstream vision tasks,
+bility. Integrated with a RB and a supervised depth decoder,      different methods are compared in Fig. 3b. Raw 8-bit frames
+the proposed pipeline enables temporally consistent and           contain high-frequency noise, Gaussian smoothing reduces
+geometrically accurate depth predictions from thermal-only        noise but blurs salient edges, and CLAHE improves contrast
+sequences, thereby facilitating robust SLAM performance.          while amplifying spurious features. In contrast, the CNN-
+As illustrated in Fig. 1, the proposed system takes as input a    based T-RefNet produces denoised yet structurally consistent
+raw 16-bit thermal image captured by an LWIR camera. To           outputs, preserving contours and enabling stable feature
+compensate for the inherently low contrast and high dynamic       extraction for SLAM.
+range of thermal data, a lightweight convolutional module,
+T-RefNet, is introduced to refine and normalize the input         B. Training flow of the depth estimation
+data. This module produces two complementary outputs:             The training procedure for the proposed T-RefNet-based se-
+i) a normalized thermal image that serves as input to the         quence depth estimation model is described in Algorithm 1.
+supervised depth estimation backbone, and ii) an 8-bit color-     At each timestep, the input thermal frame is first refined
+mapped representation suitable for reliable ORB feature           by the T-RefNet module and then encoded into multi-scale
+extraction within ORB-SLAM3. By providing both depth              features. These features are passed through the RB to capture
+priors and texture-rich images, the system overcomes the          temporal context and finally decoded into a depth map.
+limitations of raw thermal imagery, enabling robust SLAM
+operation with metric scale recovery.                                           1 FLIR Boson: https://oem.flir.com/products/boson
+ Algorithm 1: Training flow of the refinement–                   recurrent network of non-linear neurons. This state space
+ sequence depth estimation.                                      inherently captures the temporal dependencies of the input,
+  Input: Thermal sequences {xt }Tt=1 , and the                   while the readout layer maps the reservoir dynamics onto the
+            ground-truth depths {ztgt }Tt=1                      desired output.
+  1. Initialize parameters: θ (T-RefNet), ϕ (Enc–Dec),              Let u(t) ∈ RK be the input at time t with K input
+  ψ (RB), lr η                                                   neurons. The internal state of the reservoir, x(t) ∈ RN , is
+  for t ← 1 to T do                                              expressed as
+      yt ← fθ (xt );                                                       x(t + 1) = f (Win u(t + 1) + Wx(t)) ,            (1)
+      {henc    L
+          t,ℓ }ℓ=0 ← Encoderϕ (yt );                                                                          N ×K
+      ht ← Flatent.S (henc
+        in                                                       where f is a sigmoidal function, Win ∈ R         represents
+                            t,L );
+      hRB    ←   W  (h in
+                          , h RB                                 the input matrix, W ∈ RN ×N the weight matrix of the
+        t          ψ t        t−1 );
+        enc                  RB
+      ht,L ← Freadout (ht );                                    reservoir, and y ∈ RL is the output signal. Then the output
+      ẑt ← Decoderϕ {henc         L                             is computed as
+                             t,ℓ }ℓ=0 ;
+  2. Calculate loss function                                                  y(t + 1) = f out (Wout x(t + 1)) ,            (2)
+  Ltotal = λ1 LSIlog + λ2 LSSIM + λ3 Lord + λ4 Lsm ;
+                                                                 with Wout ∈ RL×N . We base our reservoir implementation
+  3. Update the weights:
+                                                                 on [27], which uses a biologically realistic representation
+  θ ← θ − η∇θ Ltotal ;
+                                                                 of neurons, namely the leaky-integrate and fire (LIF) neu-
+  ϕ ← ϕ − η∇ϕ Ltotal ;
+                                                                 ron. The reservoir layer consists of a vector of membrane
+  ψ ← ψ − η∇ψ Ltotal ;
+                                                                 potentials of N of excitatory and inhibitory LIF neurons
+                                                                 v(t) ∈ RN . A differential equation describes the LIF neuron
+                                                                 as [28]:
+   The model parameters are updated end-to-end with a                               dV (t)
+                                                                                τm         = −V (t) + Rm I(t),             (3)
+composite loss designed to enforce both geometric consis-                            dt
+tency and perceptual accuracy. Building on the concept of        where V (t) is the membrane potential at time t, τm is the
+combined loss formulations from prior work [13], we extend       membrane time constant Rm is the membrane resistance and
+this idea by integrating multiple complementary objectives       I(t) is the input current at time t.
+into a single framework. Specifically, the loss includes: i) a
+scale-invariant term LSIlog [23], assigned the largest weight                        IV. E XPERIMENTS
+(0.9) to capture the global depth structure; ii) a perceptual       In this section, we present the thermal-to-depth estimation
+similarity term LSSIM [24], weighted 0.4 to preserve local       results of the proposed model, followed by an evaluation of
+structures and textures; iii) a depth-ordering term Lord [25],   its integration into ORB-SLAM3 across various trajectories
+weighted 0.1 to enforce correct relative ordering between        and scenes, using both UAV and handheld devices to high-
+pixels; and iv) an edge-aware smoothness term Lsm [26], also     light the advantages for robust localization.
+weighted 0.1, to regularize depth predictions while respecting
+                                                                 A. Evaluation and baselines
+image boundaries. This formulation improves stability and
+accuracy in thermal depth estimation.                               To comprehensively evaluate the proposed approach,
+   To maintain efficiency and real-time capability, the en-      we conducted experiments on two different thermal–depth
+coder backbone is instantiated with lightweight architectures    datasets: (i) the indoor-dark subset of VIVID++ [21], which
+such as EfficientNet-B0, MobileNet, or ResNet-8, offering        is recorded with a radiometric thermal camera, and (ii) a
+a favorable trade-off between accuracy and computational         custom dataset collected with a non-radiometric thermal sen-
+cost. For temporal modeling, the refined thermal sequence        sor and a depth camera. This dual evaluation setup enables
+is further processed by either a ConvGRU bottleneck or           us to assess performance under both radiometric and non-
+a reservoir computing based network, both integrated into        radiometric conditions. The thermal data were captured with
+the depth estimation network. These recurrent architectures      a Flir Boson+1 non-radiometric shuttered camera (640×512).
+capture frame-to-frame dependencies and enforce temporal         The dataset comprises approximately 65,000 samples, cov-
+consistency across predictions, which is essential for stable    ering diverse lighting conditions—bright, dark, and semi-
+SLAM operation in dynamic or texture-poor thermal envi-          lit—and including scenes with both hot and cold objects to
+ronments. As a result, SLAM initialization becomes more          improve robustness across thermal distributions.
+reliable, mapping accuracy improves, and real-time tracking         For comparison, we include both RGB-trained depth esti-
+performance is enhanced.                                         mation networks (ZoeDepth [29], DepthAnything-V2 [30])
+                                                                 and thermal-specific approaches from the literature [13],
+C. Reservoir computing                                           [31]–[33]. Since ZoeDepth and DepthAnything-V2 were
+  RC constitutes a recurrent neural network paradigm that        trained on RGB images, we pre-processed our thermal inputs
+represents and processes temporal and sequential data [10].      by mapping them to RGB format before inference. Regarding
+Fundamentally, RC operates by embedding input signals into       [13], we retrained and evaluated the model on our non-
+a high-dimensional state space via a randomly connected          radiometric dataset using the sequences we collected. We use
+                                      TABLE I                                                                TABLE II
+               Q UANTITATIVE COMPARISON OF DEPTH ESTIMATION ACCURACY                 E VALUATION RESULTS OF THERMAL - TO - DEPTH NETWORKS ON A
+ACROSS DIFFERENT ARCHITECTURES ON THE INDOOR - DARK SUBSET OF                         CUSTOM INDOOR DATASET ACQUIRED WITH NONRADIOMETRIC
+       THE VIVID++ [21] DATASET. B EST VALUES ARE SHOWN IN BOLD .                  THERMAL AND DEPTH SENSORS . B EST VALUES ARE SHOWN IN BOLD .
+
+
+ Model                              AbsRel    RMSE      a1       a2      a3        Model                      AbsRel    RMSE      a1      a2      a3
+ Shin (T) [31]                       0.232    0.740    0.618   0.907   0.987       Shin (Max.) [13]            0.262    1.273    0.589   0.890   0.960
+ Shin (MS) [31]                      0.166    0.566    0.768   0.967   0.994       ZoeDepth [29]               0.243    1.110    0.605   0.885   0.954
+ Shin (Max.) [13]                    0.149    0.517    0.813   0.969   0.994       DepthAnything-V2 [30]       0.267    1.043    0.571   0.863   0.931
+ ZoeDepth [29]                       0.165    0.533    0.788   0.944   0.991
+ DepthAnything-V2 [30]               0.112    0.378    0.902   0.970   0.990       ResNet8+GRU (ours)          0.109    0.516    0.886   0.943   0.969
+ Ye et al. [33]                      0.145    0.499    0.827   0.969   0.994       MobileNet+GRU (ours)        0.085    0.453    0.911   0.951   0.971
+ MSDFNet [32]                        0.139    0.470    0.847   0.980   0.996       Eff-B0+GRU (ours)           0.079    0.424    0.920   0.955   0.971
+                                                                                   Eff-B0+RC (ours)            0.076    0.439    0.929   0.965   0.981
+ Eff-B0 noRB (ours)                  0.139    0.497    0.839   0.945   0.984
+ Eff-B0+GRU noTRN (ours)             0.079    0.325    0.929   0.980   0.995
+ ResNet8+GRU (ours)                  0.079    0.345    0.913   0.970   0.990
+ MobileNet+GRU (ours)                0.072    0.318    0.928   0.977   0.993
+ Eff-B0+GRU (ours)                   0.063    0.298    0.940   0.980   0.993
+ Eff-B0+RC (ours)                    0.069    0.313    0.931   0.976   0.993
+                                                                                  though it preserves sharpness in some static scenes, during
+                                                                                  motion it often blurs structures, removes objects, and hinders
+          Eff-B0: EfficientNet-B0 backbone; noRB: without recurrent block;
+          GRU: ConvGRU; noTRN: without T-RefNet.                                  accurate depth analysis. In contrast, our architectures signifi-
+                                                                                  cantly outperform all baselines on most metrics. In particular,
+                                                                                  our model with the EfficientNet-B0 encoder achieves the
+key metrics to quantitatively evaluate our methods against the                    best results with AbsRel = 0.063, RMSE = 0.298, and
+baselines, such as mean absolute relative error (AbsRel), root                    a1 = 0.940, highlighting the effectiveness of the combined
+mean squared error (RMSE), and accuracy under thresholds                          ConvGRU and T-RefNet modules. In addition, the RC variant
+1.25, 1.252 , 1.253 (a1, a2, a3).                                                 delivers results close to the best model in the radiometric data
+                                                                                  set, while using only about 50k parameters (including its
+B. Thermal-to-depth estimation results                                            latency space block and readout) with 32 reservoir neurons
+   Table I shows the quantitative results on the VIVID++                          compared to over 800k parameters required for ConvGRU
+indoor-dark subset. The methods demonstrate competitive                           and its corresponding components, making it a lightweight
+performance, with MSDFNet [32] achieving the best a2                              yet competitive alternative.
+(0.980) and a3 accuracy (0.996). Among general-purpose                               Table II presents the evaluation on the proposed non-
+RGB models, DepthAnything-V2 [30] yields strong results                           radiometric dataset, which is considerably more challenging
+(AbsRel = 0.112, RMSE = 0.378). However, as illustrated                           due to fluctuating pixel intensities caused by auto-scaling and
+in Fig. 4e, its predictions are not entirely consistent: Al-                      internal heating. The models trained purely on RGB inputs
+
+
+
+
+ VIVID++
+
+
+
+
+ Our Dataset
+
+
+
+
+                       (a) RGB           (b) Thermal           (c) Ground Truth     (d) Shin et al. [13]   (e) DepthAnything [30] (f) Ours (RC+Eff-B0)
+Fig. 4. Qualitative comparison across two datasets. Top: VIVID++; bottom: our dataset. Each row shows two temporally adjacent frames. Columns: (a)
+RGB, (b) thermal, (c) thermal-aligned ground-truth depth, (d) Shin et al. [13], (e) DepthAnything-V2 [30] (RGB-only), (f) Our representative proposed
+model with RC.
+(ZoeDepth, DepthAnything-V2) perform poorly, with higher                    high noise levels. The detected features are too sparse and
+AbsRel and lower accuracies. Regarding [13], as illustrated                 unstable to support consistent tracking, making it impossible
+in Fig. 4d, the method employs radiometric-specific prepro-                 for ORB-SLAM3 to generate a meaningful trajectory. In dark
+cessing and performs reasonably on the VIVID++ dataset,                     illumination conditions, RGB images also fail to provide
+but on non-radiometric data its consistency degrades when                   sufficient structure for reliable feature extraction, as shown
+hot or cold objects enter or leave the scene. In contrast, our              in the top row of Fig. 5. In contrast, T-RefNet thermal
+models remain robust, with RC combined with EfficientNet-                   frames maintain edge consistency and enhance feature visi-
+B0 giving slightly better results on the non-radiometric                    bility, facilitating stable keypoint detection and accurate pose
+dataset (AbsRel = 0.076, a1 = 0.929), as also shown in                      estimation. Consequently, except for evaluations in bright
+Fig. 4. Although the difference compared to the GRU-based                   environments, only the T-RefNet image was used in dark
+model is not large, it is notable that the RC variant, with                 scenarios, while raw 8-bit thermal and RGB inputs were
+a lighter architecture, performs better in the more variable                excluded from quantitative analysis.
+non-radiometric conditions. These findings underscore the                      Three evaluation scenarios are designed to assess the pro-
+importance of radiometric invariance and demonstrate that                   posed pipeline under varying conditions: i) a bright environ-
+our approach generalizes well across both radiometric and                   ment with abundant features and linear motion, comparing
+non-radiometric settings.                                                   RGB-D and estimated thermal depth; ii) a dark environment
+                                                                            with circular motion and fewer features, evaluating thermal
+C. Localization results
+                                                                            depth performance; and iii) a UAV-based test across corri-
+   To evaluate the practical applicability of our thermal-based             dors with varying illumination, where each corridor presents
+preprocessing and depth estimation pipeline within a visual                 different lighting conditions.
+SLAM framework, we integrated the outputs of both the                          In the bright environment scenario with linear back-and-
+T-RefNet and the depth prediction network into the ORB-                     forth motion (Fig. 6), RGB-D naturally achieves higher accu-
+SLAM3 framework. The goal is to evaluate how well these                     racy than thermal depth due to the abundance of detectable
+outputs support localization and mapping under thermal-only                 features. Nevertheless, since the motion is simple and the
+input conditions.                                                           scene provides rich structural cues, both methods produce
+   All experiments are conducted offline using ROS bag files.               stable trajectories. The handheld setup further reduces mo-
+Thermal and RGB-D images were captured and stored in                        tion jitter, resulting in consistent tracking across all axes.
+real time, and the synchronized data streams were recorded
+into ‘.bag‘ files. The stored bags were then played back for
+evaluation to ensure consistent and reproducible conditions.
+   In low-light indoor scenarios, the quality of input images                                                                                                                        2         T        RGB      GT
+
+directly affects the ability of ORB-SLAM3 to maintain
+                                                                                                                                                                                     1
+reliable tracking. As illustrated in Fig. 5, directly converting                                                                                                         Y [m]
+                                                                                                                                                                                     0
+raw 16-bit thermal images into an 8-bit format results in
+frequent loss of structural features due to low contrast and                                                                                                                     -1
+                                                                                                                                                                                          -1        0     1     2      3
+                                                                                                                                                                                                        X [m]
+            t = 35.0 s          t = 35.3 s            t = 35.6 s                                       (a) Test setup                          (b) Scene                                 (c) Trajectory
+                                                                                              4                                     1                                    1.4
+
+
+
+                                                                            Position [m]
+                                                                                                          T     RGB      GT                     T     RGB      GT                              T        RGB     GT
+
+ RGB
+                                                                                              2                                    0.8
+                                                                                                                                   0.6                                   1.2
+                                                                                              0
+                                                                                                                                   0.4
+                                                                                             -2                                                                             1
+                                                                                                  0       10       20         30         0      10       20         30           0             10         20         30
+                                                                                                              Time [s]                              Time [s]                                       Time [s]
+
+
+
+ Thermal
+                                                                                                       (d) X position                        (e) Y position                              (f) Z position
+
+                                                                                             0.4       MET = 0:08 m                0.3    MET = 0:06 m                   0.2
+
+
+
+                                                                            Abs. Error [m]
+                                                                                                                          T                                     T                     MET = 0:04 m               T
+                                                                                                      MERGB = 0:07 m                     MERGB = 0:03 m                              MERGB = 0:02 m
+                                                                                                                          RGB                                   RGB                                              RGB
+                                                                                                                                   0.2
+                                                                                             0.2                                                                         0.1
+                                                                                                                                   0.1
+
+
+
+
+ T-RefNet
+                                                                                              0                                     0                                       0
+                                                                                                   0       10      20         30         0      10       20         30           0             10         20         30
+                                                                                                              Time [s]                              Time [s]                                       Time [s]
+                                                                                                       (g) X position                        (h) Y position                              (i) Z position
+                                                                            Fig. 6. Experimental results in a bright indoor scene with a handheld
+Fig. 5. Feature tracking results of ORB-SLAM3 using different image         device. (a) Test setup with RGB-D and thermal cameras, (b) sample scene
+inputs: RGB images (top row), raw 8-bit thermal images (middle row),        view, and (c) ground-truth trajectory. (d–f) Estimated trajectories along the
+and T-RefNet enhanced thermal images (bottom row). While RGB features       X, Y, and Z axes from ORB-SLAM3 with RGB-D and T-RefNet refined
+degrade under low-light indoor conditions, raw thermal inputs suffer from   thermal input are compared against ground truth. (g–i) Absolute position
+noise and low contrast. In contrast, T-RefNet outputs provide more stable   errors along each axis are shown, with mean error (ME) values highlighted
+and repeatable features, leading to improved tracking robustness.           for both RGB-D and T-RefNet inputs.
+                                                                                                             3                                                                                                                                         4
+                                                                                                                          Est.           GT                                                                                                                          Est.       GT
+                                                                                                             2
+                                                                                                                                                                                                                                                       2
+                                                                                                             1
+                                                                                                 Y [m]       0                                                                                                                             Y [m]
+                                                                                                                                                                                                                                                       0
+                                                                                                         -1
+                                                                                                         -2                                                                                                                                        -2
+                                                                                                           -2                   0             2                                                                                                            0                    5
+                                                                                                                           X [m]                                                                                                                                      X [m]
+                            (a) Test setup                            (b) Scene                                  (c) Trajectory                                               (a) Test setup                        (b) Scene                              (c) Trajectory
+
+                 2                                                                               2                                                                 8
+
+
+Position [m]
+                                   Est.        GT                          Est.        GT                               Est.        GT                                               Est.    GT                          Est.    GT                                 Est.    GT
+
+
+                                                                                                                                                  Position [m]
+                                                         2                                                                                                                                              2                                    1
+                                                                                                                                                                   6
+                                                                                                                                                                                                                                           0.8
+                 0                                       0                                       1                                                                 4                                    0
+                                                                                                                                                                                                                                           0.6
+                                                                                                                                                                   2
+                                                                                                                                                                                                       -2                                  0.4
+                 -2                                      -2                                      0                                                                 0
+                      0       15          30        45        0       15          30        45       0             15          30        45                            0        10          20    30        0       10          20    30           0           10          20       30
+                                Time [s]                                Time [s]                                    Time [s]                                                     Time [s]                             Time [s]                                   Time [s]
+                           (d) X position                          (e) Y position                                (f) Z position                                              (d) X position                      (e) Y position                            (f) Z position
+
+                 0.8                                     0.8           ME = 0.118 m                                                                                             ME = 0.259 m                        ME = 0.275 m                               ME = 0.115 m
+
+
+
+                                                                                                                                                  Abs. Error [m]
+                              ME = 0.201 m                                                       0.6
+
+
+
+Abs. Error [m]
+                                                                                                                    ME = 0.109 m                                   0.6                                 0.6                                 0.4
+                 0.6                                     0.6
+                                                                                                 0.4                                                               0.4                                 0.4
+                 0.4                                     0.4                                                                                                                                                                               0.2
+                 0.2                                     0.2                                     0.2                                                               0.2                                 0.2
+                  0                                       0                                          0                                                              0                                   0                                     0
+                       0      15          30        45         0      15          30        45           0         15          30        45                              0       10         20    30         0       10         20    30           0           10          20       30
+                                   Time [s]                                Time [s]                                     Time [s]                                                     Time [s]                            Time [s]                                Time [s]
+                           (g) X abs. error                        (h) Y abs. error                          (i) Z abs. error                                                (g) X abs. error                    (h) Y abs. error                      (i) Z abs. error
+Fig. 7. Experimental results in a dark indoor scene with a handheld device                                                                        Fig. 8. Experimental results in a dark indoor scene with UAV. (a) UAV
+performing circular motion. (a) Handheld device, (b) sample scene view,                                                                           with thermal cameras, (b) sample scene view, and (c) ground-truth trajectory.
+and (c) ground-truth trajectory. (d–f) Estimated trajectories along the X, Y,                                                                     (d–f) Estimated trajectories along the X, Y, and Z axes from ORB-SLAM3
+and Z axes from ORB-SLAM3 with T-RefNet are compared against ground                                                                               with T-RefNet are compared against ground truth. (g–i) Absolute position
+truth. (g–i) Absolute position errors are shown for each axis, with ME values                                                                     errors are shown for each axis, with ME values highlighted.
+highlighted.
+
+
+                                                                                                                                                     ORB-SLAM3 with T-RefNet enhanced thermal input suc-
+Quantitatively, the Euclidean mean error is about 0.11 m                                                                                          cessfully tracked the UAV’s trajectory, achieving a Euclidean
+for thermal depth and about 0.08 m for RGB-D indicating                                                                                           mean error of approximately 0.39 m across the three axes.
+that while RGB-D has an advantage, the T-RefNet–enhanced                                                                                          This error reflects the increased difficulty posed by un-
+thermal input with estimated depth still provides sufficiently                                                                                    even lighting, cold-object distractors, and narrow passages.
+accurate estimates for reliable localization.                                                                                                     Nonetheless, the system maintained a continuous trajectory
+   In the dark circular motion scenario in Fig. 7, features                                                                                       estimate, demonstrating robustness under mixed illumination
+cluster on one side of the scene, causing uneven keypoint                                                                                         and in the presence of thermally deceptive objects.
+coverage and degraded tracking. The X-axis shows the most                                                                                            In summary, the three evaluation scenarios demonstrate
+significant deviations, with a mean error of approximately                                                                                        that the proposed pipeline delivers stable localization across
+0.20 m and frequent peaks of up to 0.70 m. Y and Z are                                                                                            diverse conditions. In the bright feature-rich environments,
+more stable than X overall, with mean errors of about 0.12 m                                                                                      thermal depth achieves accuracy comparable to RGB-D. In
+and 0.11 m; however, Y exhibits rare spikes up to 0.80 m,                                                                                         the dark circular motion, it sustains tracking with moderate
+whereas Z’s transients remain within about 0.50 m. These                                                                                          accuracy loss where RGB completely fails. In UAV corridor
+peaks are less frequent than in X, where fluctuations occur                                                                                       flights with mixed illumination and distractors, it maintains
+more consistently. Aggregated over all axes, the Euclidean                                                                                        continuous trajectories within sub-0.4 m error. These results
+mean error is about 0.26 m, highlighting the accuracy loss                                                                                        validate the robustness of the method under both handheld
+in circular motion under low light. Figure 5 further shows                                                                                        and UAV setups in challenging environments.
+that ORB-SLAM3 with RGB input alone fails to maintain
+tracking in this scenario.                                                                                                                                                           V. C ONCLUSIONS AND F UTURE WORK
+   In the corridor experiment (Fig. 8), the UAV flies through                                                                                        This paper presents a thermal-based depth estimation and
+three different corridors: two in complete darkness and one                                                                                       SLAM framework for navigation in GPS-denied, low-light
+with mixed illumination, where certain regions were lit                                                                                           environments. A lightweight thermal-to-depth network with
+while others remained in shadow. Within and at the end of                                                                                         recurrent blocks, including RC, was trained on radiometric
+each corridor, distinctive structures were placed to ensure                                                                                       VIVID++ and custom non-radiometric datasets, achieving
+the presence of detectable features. Additionally, aluminium                                                                                      state-of-the-art accuracy across both. Unlike prior methods
+foil strips were attached to selected surfaces to create low-                                                                                     that degrade on non-radiometric data, our recurrent design
+emissivity targets, which appear as cold objects in thermal                                                                                       maintains temporal consistency under noise and low tex-
+images even when they are at room temperature.                                                                                                    ture, requiring only ∼50k parameters versus ∼800k for
+ConvGRU. For localization, ORB-SLAM3 with T–RefNet                              [13] U. Shin, K. Lee, B.-U. Lee, and I. S. Kweon, “Maximizing self-
+enhanced thermal inputs yielded robust trajectories in both                          supervision from thermal image for effective self-supervised learning
+                                                                                     of depth and ego-motion,” IEEE Robotics and Automation Letters,
+the handheld and the UAV experiments. In contrast, raw                               vol. 7, no. 3, pp. 7771–7778, 2022.
+thermal or RGB inputs failed in darkness, demonstrating that                    [14] X. Chen, W. Dai, J. Jiang, B. He, and Y. Zhang, “Thermal-depth
+the proposed pipeline extends SLAM to conditions where                               odometry in challenging illumination conditions,” IEEE Robotics and
+                                                                                     Automation Letters, vol. 8, no. 7, pp. 3988–3995, 2023.
+conventional vision breaks down.                                                [15] A. NG, D. PB, J. Shalabi, S. Jape, X. Wang, and Z. Jacob, “Thermal
+   Despite its robustness, the framework can encounter chal-                         Voyager: a comparative study of RGB and thermal cameras for night-
+lenges when the number of detected features is low, resulting                        time autonomous navigation,” in 2024 IEEE International Conference
+                                                                                     on Robotics and Automation (ICRA), 2024, pp. 14 116–14 122.
+in occasional tracking loss. Furthermore, artifacts inherent                    [16] P. V. K. Borges and S. Vidas, “Practical infrared visual odometry,”
+to thermal cameras, such as NUC, may cause temporary                                 IEEE Transactions on Intelligent Transportation Systems, vol. 17,
+intensity changes, disrupting feature stability and tracking.                        no. 8, pp. 2205–2213, 2016.
+                                                                                [17] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for
+While real-time operation is feasible on embedded hardware                           image recognition,” 2015. [Online]. Available: https://arxiv.org/abs/
+for short sequences and moderate motion, prolonged or more                           1512.03385
+dynamic scenarios still pose difficulties. As future work, we                   [18] M. Tan and Q. V. Le, “EfficientNet: Rethinking model scaling
+                                                                                     for convolutional neural networks,” 2020. [Online]. Available:
+aim to mitigate these limitations by improving robustness                            https://arxiv.org/abs/1905.11946
+against NUC artifacts, optimizing the pipeline for embedded                     [19] A. G. Howard, M. Zhu, B. Chen, D. Kalenichenko, W. Wang,
+platforms, and integrating depth estimation with obstacle                            T. Weyand, M. Andreetto, and H. Adam, “MobileNets: efficient
+                                                                                     convolutional neural networks for mobile vision applications,” 2017.
+avoidance modules to enable autonomous drone navigation                              [Online]. Available: https://arxiv.org/abs/1704.04861
+and full trajectory estimation.                                                 [20] T. Ma, L. Zhang, X. Diao, and O. Ma, “ConvGRU in fine-grained
+                                                                                     pitching action recognition for action outcome prediction,” 2020.
+                                                                                     [Online]. Available: https://arxiv.org/abs/2008.07819
+                             R EFERENCES                                        [21] A. J. Lee, Y. Cho, Y. sik Shin, A. Kim, and H. Myung,
+ [1] J. G. Hansen, M. Heiß, D. Li, M. Kozłowski, and E. Kayacan, “Vessel             “ViViD++: Vision for visibility dataset,” 2022. [Online]. Available:
+     inspection in-the-wild: Practical planning in large-scale industrial            https://arxiv.org/abs/2204.06183
+     environments,” in 2023 American Control Conference (ACC), 2023,            [22] FLIR Systems. (2021) The benefits and challenges of
+     pp. 812–817.                                                                    radiometric thermal technology. Accessed: 2025-04-22. [On-
+ [2] J. G. Hansen, M. Heiß, M. Kozlowski, and E. Kayacan, “UAV                       line]. Available: https://www.flir.com/discover/security/radiometric/
+     trajectory evaluation in large industrial environments: A cost-effective        the-benefits-and-challenges-of-radiometric-thermal-technology
+     solution,” in 2022 European Control Conference (ECC), 2022, pp.            [23] D. Eigen, C. Puhrsch, and R. Fergus, “Depth map prediction from
+     1336–1341.                                                                      a single image using a multi-scale deep network,” CoRR, vol.
+                                                                                     abs/1406.2283, 2014. [Online]. Available: http://arxiv.org/abs/1406.
+ [3] A. Amer, M. Mehndiratta, J. le Fevre Sejersen, H. X. Pham, and
+                                                                                     2283
+     E. Kayacan, “Visual tracking nonlinear model predictive control
+                                                                                [24] C. Godard, O. M. Aodha, M. Firman, and G. Brostow, “Digging
+     method for autonomous wind turbine inspection,” in 2023 21st In-
+                                                                                     into self-supervised monocular depth estimation,” 2019. [Online].
+     ternational Conference on Advanced Robotics (ICAR), 2023, pp. 431–
+                                                                                     Available: https://arxiv.org/abs/1806.01260
+     438.
+                                                                                [25] K. Xian, J. Zhang, O. Wang, L. Mai, Z. Lin, and Z. Cao, “Structure-
+ [4] H. X. Pham and E. Kayacan, “FROST: Fusion and multimodal 3d
+                                                                                     guided ranking loss for single image depth prediction,” in 2020
+     reconstruction of icy surfaces for robotic exploration,” in 2025 IEEE
+                                                                                     IEEE/CVF Conference on Computer Vision and Pattern Recognition
+     Symposium on Computational Intelligence on Engineering/Cyber
+                                                                                     (CVPR), 2020, pp. 608–617.
+     Physical Systems Companion (CIES Companion), 2025, pp. 1–5.
+                                                                                [26] C. Xu, B. Huang, and D. S. Elson, “Self-supervised monocular depth
+ [5] A. Q. Nguyen, H. T. Nguyen, V. C. Tran, H. X. Pham, and J. Pestana,
+                                                                                     estimation with 3-D displacement module for laparoscopic images,”
+     “A visual real-time fire detection using single shot multibox detector
+                                                                                     IEEE Transactions on Medical Robotics and Bionics, vol. 4, no. 2,
+     for uav-based fire surveillance,” in 2020 IEEE Eighth International
+                                                                                     pp. 331–334, 2022.
+     Conference on Communications and Electronics (ICCE), 2021, pp.
+                                                                                [27] R. Hasani, M. Lechner, A. Amini, D. Rus, and R. Grosu, “Liquid
+     338–343.
+                                                                                     time-constant networks,” in Proceedings of the AAAI Conference on
+ [6] M. Lyu, Y. Zhao, C. Huang, and H. Huang, “Unmanned aerial vehicles
+                                                                                     Artificial Intelligence, vol. 35, no. 9, 2021, pp. 7657–7666.
+     for search and rescue: A survey,” Remote Sensing, vol. 15, no. 13,
+                                                                                [28] W. Gerstner, W. M. Kistler, R. Naud, and L. Paninski, Neuronal
+     2023.
+                                                                                     dynamics: From single neurons to networks and models of cognition.
+ [7] Y.-S. Shin and A. Kim, “Sparse depth enhanced direct thermal-infrared
+                                                                                     Cambridge University Press, 2014.
+     SLAM beyond the visible spectrum,” IEEE Robotics and Automation
+                                                                                [29] S. F. Bhat, R. Birkl, D. Wofk, P. Wonka, and M. Müller, “ZoeDepth:
+     Letters, vol. 4, no. 3, pp. 2918–2925, 2019.
+                                                                                     zero-shot transfer by combining relative and metric depth,” 2023.
+ [8] J. Jiang, X. Chen, W. Dai, Z. Gao, and Y. Zhang, “Thermal-inertial              [Online]. Available: https://arxiv.org/abs/2302.12288
+     SLAM for the environments with challenging illumination,” IEEE             [30] L. Yang, B. Kang, Z. Huang, Z. Zhao, X. Xu, J. Feng,
+     Robotics and Automation Letters, vol. 7, no. 4, pp. 8767–8774, 2022.            and H. Zhao, “Depth Anything V2,” 2024. [Online]. Available:
+ [9] J. Yang, W. Jinxin, X. Li, and X. Qin, “Tool wear prediction based              https://arxiv.org/abs/2406.09414
+     on parallel dual-channel adaptive feature fusion,” The International       [31] U. Shin, K. Lee, S. Lee, and I. S. Kweon, “Self-supervised depth
+     Journal of Advanced Manufacturing Technology, vol. 128, pp. 1–21,               and ego-motion estimation for monocular thermal video using multi-
+     07 2023.                                                                        spectral consistency loss,” IEEE Robotics and Automation Letters,
+[10] H. Jaeger, “The “echo state” approach to analysing and training                 vol. 7, no. 2, pp. 1103–1110, 2022.
+     recurrent neural networks-with an erratum note,” Bonn, Germany:            [32] L. Kong, Q. Zheng, and W. Wang, “MSDFNet: multi-scale detail
+     German national research center for information technology gmd                  feature fusion encoder–decoder network for self-supervised monocular
+     technical report, vol. 148, no. 34, p. 13, 2001.                                thermal image depth estimation,” Measurement Science and Technol-
+[11] C. Campos, R. Elvira, J. J. G. Rodrı́guez, J. M. M. Montiel, and                ogy, vol. 36, no. 1, p. 016039, dec 2024.
+     J. D. Tardós, “ORB-SLAM3: an accurate open-source library for             [33] X. Ye, X. Mao, R. Xu, and H. Li, “Mining scene structural guidance
+     visual, visual–inertial, and multimap SLAM,” IEEE Transactions on               for thermal images in self-supervised monocular depth estimation,”
+     Robotics, vol. 37, no. 6, pp. 1874–1890, 2021.                                  in ICASSP 2025 - 2025 IEEE International Conference on Acoustics,
+[12] Y. Wu, L. Wang, L. Zhang, Y. Bai, Y. Cai, S. Wang, and Y. Li, “Im-              Speech and Signal Processing (ICASSP), 2025, pp. 1–5.
+     proving autonomous detection in dynamic environments with robust
+     monocular thermal SLAM system,” ISPRS Journal of Photogrammetry
+     and Remote Sensing, vol. 203, pp. 265–284, 2023.
+

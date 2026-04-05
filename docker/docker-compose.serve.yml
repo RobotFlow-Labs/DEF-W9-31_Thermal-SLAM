@@ -1,0 +1,10 @@
+version: "3.9"
+services:
+  thermal-slam-api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.serve
+    ports:
+      - "8080:8080"
+    environment:
+      - PYTHONUNBUFFERED=1
