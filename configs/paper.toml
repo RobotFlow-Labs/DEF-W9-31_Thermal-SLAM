@@ -1,0 +1,74 @@
+# Paper-faithful config for Thermal-SLAM
+# Sahin et al., "Thermal Image Refinement with Depth Estimation using
+# Recurrent Networks for Monocular ORB-SLAM3", ICRA 2026
+# Dataset: VIVID++ (320x256, 16-bit thermal + float32 depth)
+
+[model]
+encoder = "efficientnet_b0"        # EfficientNet-B0 (best in paper Table I)
+recurrent_block = "convgru"        # "convgru" or "rc_lif"
+pretrained_encoder = true
+input_channels = 1                 # 16-bit thermal (single channel)
+input_height = 256                 # VIVID++ native resolution
+input_width = 320                  # VIVID++ native resolution
+max_depth = 10.0                   # meters
+min_depth = 0.1                    # meters
+
+[model.convgru]
+hidden_dim = 128
+kernel_size = 3
+
+[model.rc_lif]
+reservoir_size = 32
+tau_m = 20.0                       # membrane time constant (ms)
+r_m = 1.0                         # membrane resistance
+leak_rate = 0.3
+
+[loss]
+silog_weight = 0.9
+ssim_weight = 0.4
+ordinal_weight = 0.1
+smoothness_weight = 0.1
+silog_variance_focus = 0.5         # lambda in SIlog loss
+
+[training]
+batch_size = "auto"                # auto-detect for L4 GPU
+learning_rate = 1e-4
+weight_decay = 0.01
+optimizer = "adamw"
+epochs = 100
+precision = "bf16"
+gradient_accumulation = 1
+max_grad_norm = 1.0
+seed = 42
+num_workers = 4
+pin_memory = true
+
+[scheduler]
+type = "warmup_cosine"
+warmup_ratio = 0.05
+min_lr = 1e-6
+
+[checkpoint]
+save_every_n_steps = 500
+keep_top_k = 2
+metric = "val_loss"
+mode = "min"
+output_dir = "/mnt/artifacts-datai/checkpoints/DEF-thermal-slam"
+
+[early_stopping]
+enabled = true
+patience = 20
+min_delta = 0.001
+
+[data]
+dataset_format = "vivid_pp"
+root = "/mnt/forge-data/datasets/vivid_plus_plus"
+augmentation = true
+
+[logging]
+log_dir = "/mnt/artifacts-datai/logs/DEF-thermal-slam"
+tensorboard_dir = "/mnt/artifacts-datai/tensorboard/DEF-thermal-slam"
+
+[export]
+onnx_opset = 17
+export_dir = "/mnt/artifacts-datai/exports/DEF-thermal-slam"

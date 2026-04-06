@@ -1,0 +1,33 @@
+# Thermal-SLAM serving container
+# Layer 3: module-specific (on top of anima-serve:jazzy)
+
+FROM ghcr.io/robotflow-labs/anima-serve:jazzy AS base
+
+# Install module dependencies
+COPY pyproject.toml /app/
+RUN uv pip install --system --no-cache-dir \
+    numpy pillow pyyaml torch torchvision timm scipy \
+    opencv-python-headless tqdm safetensors fastapi uvicorn python-multipart \
+    --index-url https://download.pytorch.org/whl/cu128
+
+# Copy module code
+COPY src/ /app/src/
+COPY configs/ /app/configs/
+
+# Install module
+RUN uv pip install --system --no-cache-dir -e /app/
+
+# Environment
+ENV ANIMA_MODULE_NAME=DEF-thermal-slam
+ENV ANIMA_MODULE_VERSION=0.1.0
+ENV ANIMA_SERVE_PORT=8080
+ENV ANIMA_DEVICE=auto
+ENV ANIMA_WEIGHT_FORMAT=auto
+ENV ANIMA_CONFIG=/app/configs/paper.toml
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+CMD ["python", "-m", "thermal_slam.serve"]

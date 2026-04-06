@@ -1,0 +1,73 @@
+# Debug / smoke test config — 2 epochs, tiny batch
+
+[model]
+encoder = "efficientnet_b0"
+recurrent_block = "convgru"
+pretrained_encoder = false          # skip download for smoke test
+input_channels = 1
+input_height = 128
+input_width = 160
+max_depth = 10.0
+min_depth = 0.1
+
+[model.convgru]
+hidden_dim = 64
+kernel_size = 3
+
+[model.rc_lif]
+reservoir_size = 16
+tau_m = 20.0
+r_m = 1.0
+leak_rate = 0.3
+
+[loss]
+silog_weight = 0.9
+ssim_weight = 0.4
+ordinal_weight = 0.1
+smoothness_weight = 0.1
+silog_variance_focus = 0.5
+
+[training]
+batch_size = 2
+learning_rate = 1e-4
+weight_decay = 0.01
+optimizer = "adamw"
+epochs = 2
+precision = "fp32"
+gradient_accumulation = 1
+max_grad_norm = 1.0
+seed = 42
+num_workers = 0
+pin_memory = false
+
+[scheduler]
+type = "warmup_cosine"
+warmup_ratio = 0.05
+min_lr = 1e-6
+
+[checkpoint]
+save_every_n_steps = 10
+keep_top_k = 1
+metric = "val_loss"
+mode = "min"
+output_dir = "/tmp/thermal_slam_debug"
+
+[early_stopping]
+enabled = false
+patience = 5
+min_delta = 0.001
+
+[data]
+dataset_format = "thermal_depth_pairs"
+train_path = "/tmp/thermal_slam_debug_data/train"
+val_path = "/tmp/thermal_slam_debug_data/val"
+test_path = "/tmp/thermal_slam_debug_data/test"
+augmentation = false
+
+[logging]
+log_dir = "/tmp/thermal_slam_debug/logs"
+tensorboard_dir = "/tmp/thermal_slam_debug/tb"
+
+[export]
+onnx_opset = 17
+export_dir = "/tmp/thermal_slam_debug/exports"

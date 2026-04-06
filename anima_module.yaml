@@ -1,0 +1,30 @@
+module:
+  id: DEF-thermal-slam
+  name: Thermal-SLAM
+  type: defense
+  task: thermal_depth_estimation_slam
+  version: 0.1.0
+  paper: "Thermal Image Refinement with Depth Estimation using Recurrent Networks for Monocular ORB-SLAM3"
+  arxiv: "2603.14998"
+
+io:
+  inputs:
+    - name: thermal_frame
+      type: image/thermal16
+      topic: /camera/thermal/raw
+  outputs:
+    - name: depth_map
+      type: image/depth
+      topic: /defense/thermal_slam/depth
+    - name: refined_thermal
+      type: image/thermal8
+      topic: /defense/thermal_slam/refined
+    - name: colormap_thermal
+      type: image/rgb
+      topic: /defense/thermal_slam/colormap
+
+runtime:
+  python_entrypoint: thermal_slam.serve:main
+  supports:
+    - cpu
+    - cuda
