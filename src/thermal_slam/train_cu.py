@@ -27,9 +27,13 @@ import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from thermal_slam.cuda_ops import is_cuda_available
+from thermal_slam.cuda_ops import (
+    cuda_depth_edge_smooth,
+    cuda_silog_loss,
+    is_cuda_available,
+)
 from thermal_slam.dataset import ThermalDepthDataset, VIVIDPlusPlusDataset
-from thermal_slam.losses import build_loss
+from thermal_slam.losses import OrdinalDepthLoss, SSIMLoss, build_loss
 from thermal_slam.model import build_model
 from thermal_slam.utils import (
     CheckpointManager,
@@ -95,6 +99,71 @@ def _format_eta(seconds: float) -> str:
     if seconds < 3600:
         return f"{seconds / 60:.0f}m"
     return f"{seconds / 3600:.1f}h"
+
+
+# ---------------------------------------------------------------------------
+# CUDA-accelerated composite loss (differentiable)
+# ---------------------------------------------------------------------------
+
+class CUDACompositeLoss(torch.nn.Module):
+    """Composite loss using CUDA kernels for SILog + smoothness.
+
+    Uses differentiable CUDA kernels (torch::autograd::Function)
+    for SILog and edge-aware smoothness. Falls back to PyTorch
+    if CUDA ops are not available.
+    """
+
+    def __init__(
+        self,
+        silog_weight: float = 0.9,
+        ssim_weight: float = 0.4,
+        ordinal_weight: float = 0.1,
+        smoothness_weight: float = 0.1,
+        silog_variance_focus: float = 0.5,
+    ) -> None:
+        super().__init__()
+        self.silog_weight = silog_weight
+        self.ssim_weight = ssim_weight
+        self.ordinal_weight = ordinal_weight
+        self.smoothness_weight = smoothness_weight
+        self.silog_variance_focus = silog_variance_focus
+        self.ssim = SSIMLoss()
+        self.ordinal = OrdinalDepthLoss()
+
+    def forward(
+        self,
+        pred_depth: torch.Tensor,
+        target_depth: torch.Tensor,
+        image: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        # CUDA differentiable SILog
+        l_silog = cuda_silog_loss(
+            pred_depth, target_depth, self.silog_variance_focus,
+        )
+
+        # PyTorch SSIM + ordinal (no CUDA kernel needed)
+        l_ssim = self.ssim(pred_depth, target_depth)
+        l_ord = self.ordinal(pred_depth, target_depth)
+
+        # CUDA differentiable edge-aware smoothness
+        if image is None:
+            image = pred_depth
+        l_sm = cuda_depth_edge_smooth(pred_depth, image)
+
+        total = (
+            self.silog_weight * l_silog
+            + self.ssim_weight * l_ssim
+            + self.ordinal_weight * l_ord
+            + self.smoothness_weight * l_sm
+        )
+
+        return {
+            "total": total,
+            "silog": l_silog.detach(),
+            "ssim": l_ssim.detach(),
+            "ordinal": l_ord.detach(),
+            "smoothness": l_sm.detach(),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -196,12 +265,21 @@ def train(cfg: dict, resume_path: str | None = None) -> None:
     )
     log.info(f"Model: {n_params / 1e6:.2f}M total, {n_train / 1e6:.2f}M trainable")
 
-    # CUDA ops status
+    # Loss — use CUDA kernels if available
     cuda_avail = is_cuda_available() and device.type == "cuda"
-    log.info(f"CUDA depth ops: {'available' if cuda_avail else 'not found'}")
-
-    # Loss
-    criterion = build_loss(cfg)
+    loss_cfg = cfg.get("loss", {})
+    if cuda_avail:
+        criterion = CUDACompositeLoss(
+            silog_weight=loss_cfg.get("silog_weight", 0.9),
+            ssim_weight=loss_cfg.get("ssim_weight", 0.4),
+            ordinal_weight=loss_cfg.get("ordinal_weight", 0.1),
+            smoothness_weight=loss_cfg.get("smoothness_weight", 0.1),
+            silog_variance_focus=loss_cfg.get("silog_variance_focus", 0.5),
+        )
+        log.info("Loss: CUDA-accelerated (fused SILog + edge smooth)")
+    else:
+        criterion = build_loss(cfg)
+        log.info("Loss: PyTorch fallback (CUDA ops not found)")
     log.info(
         f"Loss: SIlog={cfg.get('loss', {}).get('silog_weight', 0.9)} "
         f"SSIM={cfg.get('loss', {}).get('ssim_weight', 0.4)} "
