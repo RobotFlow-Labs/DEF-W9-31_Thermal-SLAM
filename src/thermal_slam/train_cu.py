@@ -1,11 +1,15 @@
 """CUDA-accelerated training loop for Thermal-SLAM depth estimation.
 
-Uses shared CUDA kernels for:
-  - Scale-invariant log depth loss (fused_si_log_loss)
-  - Edge-aware depth gradient loss (fused_depth_gradient_loss)
+Features:
+  - Structured logging with Python logging module (auto-flushed)
+  - VRAM monitoring every N steps
+  - Per-step and per-epoch metrics with ETA
+  - TensorBoard integration
+  - Shared CUDA depth ops for inference (cuda_ops.py)
 
 Usage:
-    CUDA_VISIBLE_DEVICES=2 python -m thermal_slam.train_cu --config configs/paper.toml
+    CUDA_VISIBLE_DEVICES=2 python -m thermal_slam.train_cu \
+        --config configs/paper.toml
     CUDA_VISIBLE_DEVICES=2 python -m thermal_slam.train_cu \
         --config configs/paper.toml --resume ckpt.pth
 """
@@ -14,7 +18,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
+import sys
 import time
 
 import torch
@@ -33,15 +39,67 @@ from thermal_slam.utils import (
     set_seed,
 )
 
+# ---------------------------------------------------------------------------
+# Logging setup — flushed, structured, file + console
+# ---------------------------------------------------------------------------
 
-def _build_criterion(cfg: dict) -> torch.nn.Module:
-    """Build composite loss function.
+def _setup_logging(log_dir: str) -> logging.Logger:
+    """Configure structured logging to both console and file."""
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "train.log")
 
-    Uses PyTorch CompositeDepthLoss for training (needs autograd).
-    CUDA depth ops (cuda_ops.py) are used for inference/evaluation only.
-    """
-    return build_loss(cfg)
+    logger = logging.getLogger("thermal_slam")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
 
+    fmt = logging.Formatter(
+        "[%(asctime)s] %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # Console handler (unbuffered)
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(fmt)
+    logger.addHandler(ch)
+
+    # File handler (auto-flushed)
+    fh = logging.FileHandler(log_file, mode="a")
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(fmt)
+    logger.addHandler(fh)
+
+    return logger
+
+
+def _log_vram(logger: logging.Logger, tag: str = "") -> dict:
+    """Log current GPU VRAM usage. Returns usage dict."""
+    if not torch.cuda.is_available():
+        return {}
+    used = torch.cuda.memory_allocated() / 1e9
+    reserved = torch.cuda.memory_reserved() / 1e9
+    total = torch.cuda.get_device_properties(0).total_memory / 1e9
+    pct = used / total * 100
+    prefix = f"[{tag}] " if tag else ""
+    logger.info(
+        f"{prefix}VRAM: {used:.1f}GB used / {total:.1f}GB total "
+        f"({pct:.0f}%) | reserved={reserved:.1f}GB"
+    )
+    return {"used_gb": used, "total_gb": total, "pct": pct}
+
+
+def _format_eta(seconds: float) -> str:
+    """Format seconds into human-readable ETA."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f}m"
+    return f"{seconds / 3600:.1f}h"
+
+
+# ---------------------------------------------------------------------------
+# Dataloaders
+# ---------------------------------------------------------------------------
 
 def _build_dataloaders(cfg: dict) -> tuple[DataLoader, DataLoader]:
     data_cfg = cfg.get("data", {})
@@ -52,7 +110,6 @@ def _build_dataloaders(cfg: dict) -> tuple[DataLoader, DataLoader]:
     w = model_cfg.get("input_width", 320)
     max_d = model_cfg.get("max_depth", 10.0)
     min_d = model_cfg.get("min_depth", 0.1)
-
     dataset_format = data_cfg.get("dataset_format", "vivid_pp")
 
     if dataset_format == "vivid_pp":
@@ -97,42 +154,65 @@ def _build_dataloaders(cfg: dict) -> tuple[DataLoader, DataLoader]:
     return train_loader, val_loader
 
 
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+
 def train(cfg: dict, resume_path: str | None = None) -> None:
-    """CUDA-accelerated training function."""
+    """CUDA-accelerated training with structured logging."""
     train_cfg = cfg.get("training", {})
     ckpt_cfg = cfg.get("checkpoint", {})
     es_cfg = cfg.get("early_stopping", {})
     sched_cfg = cfg.get("scheduler", {})
     log_cfg = cfg.get("logging", {})
-    loss_cfg = cfg.get("loss", {})
+
+    # Logging
+    log_dir = log_cfg.get(
+        "log_dir", "/mnt/artifacts-datai/logs/DEF-thermal-slam"
+    )
+    log = _setup_logging(log_dir)
+
+    log.info("=" * 70)
+    log.info("DEF-thermal-slam — CUDA Training")
+    log.info("=" * 70)
 
     seed = train_cfg.get("seed", 42)
     set_seed(seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[DEVICE] {device}")
+    log.info(f"Device: {device}")
     if device.type == "cuda":
-        print(f"[GPU] {torch.cuda.get_device_name(0)}")
-        vram = torch.cuda.get_device_properties(0).total_memory / 1e9
-        print(f"[VRAM] {vram:.1f} GB")
+        log.info(f"GPU: {torch.cuda.get_device_name(0)}")
+        _log_vram(log, "INIT")
 
     # Model
     model = build_model(cfg).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[MODEL] {n_params / 1e6:.2f}M total, {n_train / 1e6:.2f}M trainable")
+    n_train = sum(
+        p.numel() for p in model.parameters() if p.requires_grad
+    )
+    log.info(f"Model: {n_params / 1e6:.2f}M total, {n_train / 1e6:.2f}M trainable")
 
-    # Loss function (PyTorch autograd-compatible for training)
-    # CUDA depth ops (cuda_ops.py) available for inference/eval
+    # CUDA ops status
     cuda_avail = is_cuda_available() and device.type == "cuda"
-    cuda_msg = "available (inference)" if cuda_avail else "not available"
-    print(f"[CUDA OPS] {cuda_msg}")
+    log.info(f"CUDA depth ops: {'available' if cuda_avail else 'not found'}")
 
-    criterion = _build_criterion(cfg)
+    # Loss
+    criterion = build_loss(cfg)
+    log.info(
+        f"Loss: SIlog={cfg.get('loss', {}).get('silog_weight', 0.9)} "
+        f"SSIM={cfg.get('loss', {}).get('ssim_weight', 0.4)} "
+        f"Ord={cfg.get('loss', {}).get('ordinal_weight', 0.1)} "
+        f"Sm={cfg.get('loss', {}).get('smoothness_weight', 0.1)}"
+    )
 
     # Data
     train_loader, val_loader = _build_dataloaders(cfg)
-    print(f"[DATA] train={len(train_loader.dataset)} val={len(val_loader.dataset)}")
+    log.info(
+        f"Data: train={len(train_loader.dataset)} "
+        f"val={len(val_loader.dataset)} "
+        f"batch_size={train_loader.batch_size}"
+    )
 
     # Optimizer
     lr = train_cfg.get("learning_rate", 1e-4)
@@ -147,12 +227,19 @@ def train(cfg: dict, resume_path: str | None = None) -> None:
         optimizer, warmup_steps=warmup_steps, total_steps=total_steps,
         min_lr=sched_cfg.get("min_lr", 1e-6),
     )
+    log.info(
+        f"Scheduler: warmup={warmup_steps} steps, "
+        f"total={total_steps} steps"
+    )
 
-    # Checkpoint manager
-    ckpt_dir = ckpt_cfg.get("output_dir", "/mnt/artifacts-datai/checkpoints/DEF-thermal-slam")
+    # Checkpoint
+    ckpt_dir = ckpt_cfg.get(
+        "output_dir", "/mnt/artifacts-datai/checkpoints/DEF-thermal-slam"
+    )
     ckpt_mgr = CheckpointManager(
         save_dir=ckpt_dir, keep_top_k=ckpt_cfg.get("keep_top_k", 2),
-        metric=ckpt_cfg.get("metric", "val_loss"), mode=ckpt_cfg.get("mode", "min"),
+        metric=ckpt_cfg.get("metric", "val_loss"),
+        mode=ckpt_cfg.get("mode", "min"),
     )
 
     # Early stopping
@@ -170,57 +257,71 @@ def train(cfg: dict, resume_path: str | None = None) -> None:
     scaler = torch.amp.GradScaler("cuda", enabled=(precision == "fp16"))
 
     # TensorBoard
-    tb_dir = log_cfg.get("tensorboard_dir", "/mnt/artifacts-datai/tensorboard/DEF-thermal-slam")
+    tb_dir = log_cfg.get(
+        "tensorboard_dir",
+        "/mnt/artifacts-datai/tensorboard/DEF-thermal-slam",
+    )
     os.makedirs(tb_dir, exist_ok=True)
     writer = SummaryWriter(tb_dir)
 
-    # Logging
-    log_dir = log_cfg.get("log_dir", "/mnt/artifacts-datai/logs/DEF-thermal-slam")
-    os.makedirs(log_dir, exist_ok=True)
-
-    # Training history
+    # History
     history: list[dict] = []
 
     # Resume
     start_epoch = 0
     global_step = 0
     if resume_path and os.path.isfile(resume_path):
-        ckpt = torch.load(resume_path, map_location=device, weights_only=False)
+        ckpt = torch.load(
+            resume_path, map_location=device, weights_only=False
+        )
         model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
         scheduler.load_state_dict(ckpt["scheduler"])
         start_epoch = ckpt.get("epoch", 0)
         global_step = ckpt.get("step", 0)
-        print(f"[RESUME] epoch={start_epoch} step={global_step}")
+        log.info(f"Resumed from epoch={start_epoch} step={global_step}")
 
     max_grad_norm = train_cfg.get("max_grad_norm", 1.0)
     save_every = ckpt_cfg.get("save_every_n_steps", 500)
-    bs = train_loader.batch_size
+    log_every = 25  # log every N steps
 
-    print(f"[TRAIN] epochs={epochs} lr={lr} bs={bs} precision={precision}")
-    print(f"[CKPT] {ckpt_dir}")
-    print("=" * 70)
+    log.info(
+        f"Training: epochs={epochs} lr={lr} precision={precision} "
+        f"grad_clip={max_grad_norm}"
+    )
+    log.info(f"Checkpoints: {ckpt_dir}")
+    log.info(f"TensorBoard: {tb_dir}")
+    log.info("=" * 70)
 
+    # --- Training loop ---
     for epoch in range(start_epoch, epochs):
         model.train()
         model.reset_state()
         epoch_loss = 0.0
-        epoch_losses = {"silog": 0.0, "ssim": 0.0, "ordinal": 0.0, "smoothness": 0.0}
-        t0 = time.time()
+        epoch_losses = {
+            "silog": 0.0, "ssim": 0.0, "ordinal": 0.0, "smoothness": 0.0,
+        }
+        t_epoch = time.time()
+        n_batches = len(train_loader)
 
         for batch_idx, batch in enumerate(train_loader):
+            t_step = time.time()
             thermal = batch["thermal"].to(device, non_blocking=True)
             depth_gt = batch["depth"].to(device, non_blocking=True)
 
-            with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp):
+            with torch.amp.autocast(
+                "cuda", dtype=amp_dtype, enabled=use_amp
+            ):
                 out = model(thermal, return_refined=True)
-                loss_dict = criterion(out["depth"], depth_gt, image=out.get("normalized"))
+                loss_dict = criterion(
+                    out["depth"], depth_gt, image=out.get("normalized")
+                )
 
             loss = loss_dict["total"]
 
             if torch.isnan(loss) or torch.isinf(loss):
                 kind = "NaN" if torch.isnan(loss) else "Inf"
-                print(f"[WARN] Loss is {kind} at step {global_step}")
+                log.warning(f"Loss is {kind} at step {global_step} — skipping")
                 optimizer.zero_grad(set_to_none=True)
                 continue
 
@@ -228,7 +329,9 @@ def train(cfg: dict, resume_path: str | None = None) -> None:
 
             if max_grad_norm > 0:
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), max_grad_norm
+                )
 
             scaler.step(optimizer)
             scaler.update()
@@ -240,13 +343,36 @@ def train(cfg: dict, resume_path: str | None = None) -> None:
             for k in epoch_losses:
                 epoch_losses[k] += loss_dict[k].item()
 
-            # Log to TB every 50 steps
+            # Step logging
+            if global_step % log_every == 0:
+                step_time = time.time() - t_step
+                steps_done = batch_idx + 1
+                steps_left = n_batches - steps_done
+                eta_epoch = _format_eta(steps_left * step_time)
+                log.info(
+                    f"  step {steps_done}/{n_batches} | "
+                    f"loss={loss.item():.4f} "
+                    f"silog={loss_dict['silog'].item():.4f} "
+                    f"ssim={loss_dict['ssim'].item():.4f} | "
+                    f"lr={scheduler.get_lr():.2e} | "
+                    f"ETA={eta_epoch}"
+                )
+
+            # VRAM check (first 3 steps + every 200)
+            if global_step <= 3 or global_step % 200 == 0:
+                _log_vram(log, f"step={global_step}")
+
+            # TB logging
             if global_step % 50 == 0:
                 writer.add_scalar("train/loss", loss.item(), global_step)
-                writer.add_scalar("train/lr", scheduler.get_lr(), global_step)
+                writer.add_scalar(
+                    "train/lr", scheduler.get_lr(), global_step
+                )
                 for k, v in loss_dict.items():
                     if k != "total":
-                        writer.add_scalar(f"train/{k}", v.item(), global_step)
+                        writer.add_scalar(
+                            f"train/{k}", v.item(), global_step
+                        )
 
             # Step checkpoint
             if global_step % save_every == 0:
@@ -256,38 +382,62 @@ def train(cfg: dict, resume_path: str | None = None) -> None:
                     "scheduler": scheduler.state_dict(),
                     "epoch": epoch, "step": global_step, "config": cfg,
                 }
-                ckpt_mgr.save(state, epoch_loss / (batch_idx + 1), global_step)
+                ckpt_mgr.save(
+                    state, epoch_loss / (batch_idx + 1), global_step
+                )
+                log.info(f"  checkpoint saved at step {global_step}")
 
-        # Epoch stats
-        n_batches = max(len(train_loader), 1)
-        avg_train_loss = epoch_loss / n_batches
-        elapsed = time.time() - t0
+        # --- Epoch summary ---
+        avg_train_loss = epoch_loss / max(n_batches, 1)
+        elapsed = time.time() - t_epoch
 
         # Validation
         model.eval()
         model.reset_state()
         val_loss = 0.0
         val_count = 0
+        t_val = time.time()
         with torch.no_grad():
             for batch in val_loader:
                 thermal = batch["thermal"].to(device, non_blocking=True)
                 depth_gt = batch["depth"].to(device, non_blocking=True)
-                with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp):
+                with torch.amp.autocast(
+                    "cuda", dtype=amp_dtype, enabled=use_amp
+                ):
                     out = model(thermal)
-                    loss_dict = criterion(out["depth"], depth_gt)
-                val_loss += loss_dict["total"].item()
+                    vl = criterion(out["depth"], depth_gt)
+                val_loss += vl["total"].item()
                 val_count += 1
         avg_val_loss = val_loss / max(val_count, 1)
+        val_time = time.time() - t_val
 
-        # Log
-        print(
-            f"[Epoch {epoch + 1}/{epochs}] "
-            f"train_loss={avg_train_loss:.4f} "
-            f"val_loss={avg_val_loss:.4f} "
-            f"lr={scheduler.get_lr():.2e} "
-            f"time={elapsed:.1f}s"
+        # Epoch ETA
+        elapsed_total = time.time() - t_epoch
+        remaining_epochs = epochs - (epoch + 1)
+        eta_total = _format_eta(remaining_epochs * elapsed_total)
+
+        log.info("-" * 70)
+        log.info(
+            f"Epoch {epoch + 1}/{epochs} | "
+            f"train={avg_train_loss:.4f} val={avg_val_loss:.4f} | "
+            f"lr={scheduler.get_lr():.2e} | "
+            f"train={elapsed:.0f}s val={val_time:.0f}s | "
+            f"ETA={eta_total}"
         )
 
+        # Component losses
+        log.info(
+            f"  losses: "
+            f"silog={epoch_losses['silog'] / max(n_batches, 1):.4f} "
+            f"ssim={epoch_losses['ssim'] / max(n_batches, 1):.4f} "
+            f"ord={epoch_losses['ordinal'] / max(n_batches, 1):.4f} "
+            f"sm={epoch_losses['smoothness'] / max(n_batches, 1):.4f}"
+        )
+
+        _log_vram(log, f"epoch={epoch + 1}")
+        log.info("-" * 70)
+
+        # TB
         writer.add_scalar("epoch/train_loss", avg_train_loss, epoch + 1)
         writer.add_scalar("epoch/val_loss", avg_val_loss, epoch + 1)
 
@@ -295,13 +445,12 @@ def train(cfg: dict, resume_path: str | None = None) -> None:
         entry = {
             "epoch": epoch + 1, "train_loss": avg_train_loss,
             "val_loss": avg_val_loss, "lr": scheduler.get_lr(),
-            "elapsed_s": elapsed,
+            "train_time_s": elapsed, "val_time_s": val_time,
         }
         for k in epoch_losses:
-            entry[f"train_{k}"] = epoch_losses[k] / n_batches
+            entry[f"train_{k}"] = epoch_losses[k] / max(n_batches, 1)
         history.append(entry)
 
-        # Save history
         hist_path = os.path.join(log_dir, "training_history.json")
         with open(hist_path, "w") as f:
             json.dump(history, f, indent=2)
@@ -318,25 +467,38 @@ def train(cfg: dict, resume_path: str | None = None) -> None:
 
         # Early stopping
         if early_stop and early_stop.step(avg_val_loss):
-            print(f"[EARLY STOP] No improvement for {early_stop.patience} epochs")
+            log.info(
+                f"EARLY STOP — no improvement for "
+                f"{early_stop.patience} epochs"
+            )
             break
 
+    # --- Done ---
     writer.close()
-    print("=" * 70)
-    print("[DONE] Training complete")
+    log.info("=" * 70)
+    log.info("Training complete")
     if ckpt_mgr.best_metric is not None:
-        print(f"[BEST] val_loss={ckpt_mgr.best_metric:.4f}")
-    print(f"[CKPT] {ckpt_dir}")
-    print(f"[LOGS] {log_dir}")
-    print(f"[TB] {tb_dir}")
+        log.info(f"Best val_loss: {ckpt_mgr.best_metric:.4f}")
+    log.info(f"Checkpoints: {ckpt_dir}")
+    log.info(f"Logs: {log_dir}")
+    log.info(f"TensorBoard: {tb_dir}")
+    log.info("=" * 70)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Thermal-SLAM CUDA training")
-    parser.add_argument("--config", required=True, help="Path to TOML config")
-    parser.add_argument("--resume", default=None, help="Path to checkpoint to resume")
-    parser.add_argument("--batch-size", type=int, default=None, help="Override batch size")
-    parser.add_argument("--max-steps", type=int, default=None, help="Max steps (for smoke test)")
+    parser = argparse.ArgumentParser(
+        description="Thermal-SLAM CUDA training"
+    )
+    parser.add_argument(
+        "--config", required=True, help="Path to TOML config"
+    )
+    parser.add_argument(
+        "--resume", default=None, help="Checkpoint to resume from"
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=None,
+        help="Override batch size from config",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
