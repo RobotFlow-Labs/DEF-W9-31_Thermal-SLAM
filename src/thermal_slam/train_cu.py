@@ -21,9 +21,9 @@ import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from thermal_slam.cuda_ops import cuda_depth_gradient_loss, cuda_si_log_loss, is_cuda_available
+from thermal_slam.cuda_ops import is_cuda_available
 from thermal_slam.dataset import ThermalDepthDataset, VIVIDPlusPlusDataset
-from thermal_slam.losses import OrdinalDepthLoss, SSIMLoss, build_loss
+from thermal_slam.losses import build_loss
 from thermal_slam.model import build_model
 from thermal_slam.utils import (
     CheckpointManager,
@@ -34,82 +34,13 @@ from thermal_slam.utils import (
 )
 
 
-class CUDACompositeDepthLoss(torch.nn.Module):
-    """Composite depth loss with CUDA-accelerated SIlog and gradient components.
+def _build_criterion(cfg: dict) -> torch.nn.Module:
+    """Build composite loss function.
 
-    Falls back to pure PyTorch if CUDA ops unavailable.
+    Uses PyTorch CompositeDepthLoss for training (needs autograd).
+    CUDA depth ops (cuda_ops.py) are used for inference/evaluation only.
     """
-
-    def __init__(
-        self,
-        silog_weight: float = 0.9,
-        ssim_weight: float = 0.4,
-        ordinal_weight: float = 0.1,
-        smoothness_weight: float = 0.1,
-        silog_variance_focus: float = 0.5,
-        use_cuda_ops: bool = True,
-    ) -> None:
-        super().__init__()
-        self.silog_weight = silog_weight
-        self.ssim_weight = ssim_weight
-        self.ordinal_weight = ordinal_weight
-        self.smoothness_weight = smoothness_weight
-        self.silog_variance_focus = silog_variance_focus
-        self.use_cuda_ops = use_cuda_ops and is_cuda_available()
-
-        # SSIM and ordinal remain PyTorch (no CUDA kernel available)
-        self.ssim = SSIMLoss()
-        self.ordinal = OrdinalDepthLoss()
-
-        # Fallback pure-PyTorch loss for non-CUDA paths
-        if not self.use_cuda_ops:
-            self._fallback = build_loss({
-                "loss": {
-                    "silog_weight": silog_weight,
-                    "ssim_weight": ssim_weight,
-                    "ordinal_weight": ordinal_weight,
-                    "smoothness_weight": smoothness_weight,
-                    "silog_variance_focus": silog_variance_focus,
-                }
-            })
-
-    def forward(
-        self,
-        pred_depth: torch.Tensor,
-        target_depth: torch.Tensor,
-        image: torch.Tensor | None = None,
-    ) -> dict[str, torch.Tensor]:
-        if not self.use_cuda_ops:
-            return self._fallback(pred_depth, target_depth, image)
-
-        # CUDA-accelerated SIlog loss
-        l_silog = cuda_si_log_loss(pred_depth, target_depth, self.silog_variance_focus)
-
-        # PyTorch SSIM loss
-        l_ssim = self.ssim(pred_depth, target_depth)
-
-        # PyTorch ordinal loss
-        l_ord = self.ordinal(pred_depth, target_depth)
-
-        # CUDA-accelerated edge-aware smoothness
-        if image is None:
-            image = pred_depth
-        l_sm = cuda_depth_gradient_loss(pred_depth, image)
-
-        total = (
-            self.silog_weight * l_silog
-            + self.ssim_weight * l_ssim
-            + self.ordinal_weight * l_ord
-            + self.smoothness_weight * l_sm
-        )
-
-        return {
-            "total": total,
-            "silog": l_silog.detach(),
-            "ssim": l_ssim.detach(),
-            "ordinal": l_ord.detach(),
-            "smoothness": l_sm.detach(),
-        }
+    return build_loss(cfg)
 
 
 def _build_dataloaders(cfg: dict) -> tuple[DataLoader, DataLoader]:
@@ -182,7 +113,7 @@ def train(cfg: dict, resume_path: str | None = None) -> None:
     print(f"[DEVICE] {device}")
     if device.type == "cuda":
         print(f"[GPU] {torch.cuda.get_device_name(0)}")
-        vram = torch.cuda.get_device_properties(0).total_mem / 1e9
+        vram = torch.cuda.get_device_properties(0).total_memory / 1e9
         print(f"[VRAM] {vram:.1f} GB")
 
     # Model
@@ -191,19 +122,13 @@ def train(cfg: dict, resume_path: str | None = None) -> None:
     n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[MODEL] {n_params / 1e6:.2f}M total, {n_train / 1e6:.2f}M trainable")
 
-    # CUDA-accelerated loss
+    # Loss function (PyTorch autograd-compatible for training)
+    # CUDA depth ops (cuda_ops.py) available for inference/eval
     cuda_avail = is_cuda_available() and device.type == "cuda"
-    cuda_msg = "ENABLED — fused SIlog + gradient" if cuda_avail else "DISABLED"
+    cuda_msg = "available (inference)" if cuda_avail else "not available"
     print(f"[CUDA OPS] {cuda_msg}")
 
-    criterion = CUDACompositeDepthLoss(
-        silog_weight=loss_cfg.get("silog_weight", 0.9),
-        ssim_weight=loss_cfg.get("ssim_weight", 0.4),
-        ordinal_weight=loss_cfg.get("ordinal_weight", 0.1),
-        smoothness_weight=loss_cfg.get("smoothness_weight", 0.1),
-        silog_variance_focus=loss_cfg.get("silog_variance_focus", 0.5),
-        use_cuda_ops=cuda_avail,
-    )
+    criterion = _build_criterion(cfg)
 
     # Data
     train_loader, val_loader = _build_dataloaders(cfg)

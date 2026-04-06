@@ -434,8 +434,12 @@ class ThermalDepthNet(nn.Module):
         features = self.encoder(normalized)
 
         # Recurrent block: temporal propagation on deepest features
+        # Detach state for truncated BPTT (no backprop through prev timesteps)
+        prev_state = self._recurrent_state
+        if prev_state is not None:
+            prev_state = prev_state.detach()
         features[-1], self._recurrent_state = self.recurrent(
-            features[-1], self._recurrent_state
+            features[-1], prev_state
         )
 
         # Decoder: depth prediction

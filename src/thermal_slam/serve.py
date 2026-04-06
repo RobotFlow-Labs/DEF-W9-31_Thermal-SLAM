@@ -62,7 +62,7 @@ def health() -> dict:
     uptime = time.time() - _state["start_time"]
     gpu_info = {}
     if torch.cuda.is_available():
-        gpu_info["gpu_vram_mb"] = torch.cuda.get_device_properties(0).total_mem // (1024 * 1024)
+        gpu_info["gpu_vram_mb"] = torch.cuda.get_device_properties(0).total_memory // (1024 * 1024)
     return {
         "status": "ok",
         "module": "DEF-thermal-slam",
