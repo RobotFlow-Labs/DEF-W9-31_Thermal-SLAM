@@ -96,23 +96,23 @@ class VIVIDPlusPlusDataset(Dataset):
                     self.samples.append((tf, df))
 
     def __len__(self) -> int:
-        return max(len(self.samples), 1)
+        if len(self.samples) == 0:
+            import warnings
+            warnings.warn(
+                f"VIVIDPlusPlusDataset: no samples found at {self.root} "
+                f"(split={self.split}). Check the data path.",
+                stacklevel=2,
+            )
+        return len(self.samples)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        if len(self.samples) == 0:
-            # Synthetic fallback for smoke testing
-            thermal = np.random.randn(self.height, self.width).astype(np.float32) * 0.5 + 0.5
-            depth = np.random.uniform(
-                self.min_depth, self.max_depth, (self.height, self.width)
-            ).astype(np.float32)
-        else:
-            idx = idx % len(self.samples)
-            thermal_path, depth_path = self.samples[idx]
+        idx = idx % len(self.samples)
+        thermal_path, depth_path = self.samples[idx]
 
-            # Load thermal (16-bit uint16 PNG)
-            thermal = cv2.imread(str(thermal_path), cv2.IMREAD_UNCHANGED).astype(np.float32)
-            # Load depth (float32 NPY)
-            depth = np.load(str(depth_path)).astype(np.float32)
+        # Load thermal (16-bit uint16 PNG)
+        thermal = cv2.imread(str(thermal_path), cv2.IMREAD_UNCHANGED).astype(np.float32)
+        # Load depth (float32 NPY)
+        depth = np.load(str(depth_path)).astype(np.float32)
 
         # Ensure 2D
         if thermal.ndim == 3:
@@ -215,19 +215,20 @@ class ThermalDepthDataset(Dataset):
         return img.astype(np.float32)
 
     def __len__(self) -> int:
-        return max(len(self.samples), 1)
+        if len(self.samples) == 0:
+            import warnings
+            warnings.warn(
+                f"ThermalDepthDataset: no samples at {self.root}. "
+                "Check thermal/ and depth/ subdirectories.",
+                stacklevel=2,
+            )
+        return len(self.samples)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        if len(self.samples) == 0:
-            thermal = np.random.randn(self.height, self.width).astype(np.float32) * 0.5 + 0.5
-            depth = np.random.uniform(
-                self.min_depth, self.max_depth, (self.height, self.width)
-            ).astype(np.float32)
-        else:
-            idx = idx % len(self.samples)
-            thermal_path, depth_path = self.samples[idx]
-            thermal = self._load_frame(thermal_path)
-            depth = self._load_frame(depth_path)
+        idx = idx % len(self.samples)
+        thermal_path, depth_path = self.samples[idx]
+        thermal = self._load_frame(thermal_path)
+        depth = self._load_frame(depth_path)
 
         if thermal.ndim == 3:
             thermal = thermal[:, :, 0]
@@ -243,7 +244,8 @@ class ThermalDepthDataset(Dataset):
         if t_max - t_min > 1e-6:
             thermal = (thermal - t_min) / (t_max - t_min)
 
-        depth = np.clip(depth, self.min_depth, self.max_depth)
+        # Clip depth: 0 = invalid/unknown, let loss mask handle it
+        depth = np.clip(depth, 0.0, self.max_depth)
 
         if self.augmentation:
             if np.random.random() > 0.5:

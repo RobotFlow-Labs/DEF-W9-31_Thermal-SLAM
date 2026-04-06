@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from thermal_slam.dataset import ThermalDepthDataset
+from thermal_slam.dataset import ThermalDepthDataset, VIVIDPlusPlusDataset
 from thermal_slam.model import build_model
 from thermal_slam.utils import load_config
 
@@ -108,7 +108,7 @@ def evaluate(
 
     # Build model and load weights
     model = build_model(cfg).to(device)
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=True)
     if "model" in ckpt:
         model.load_state_dict(ckpt["model"])
     else:
@@ -116,16 +116,24 @@ def evaluate(
     model.eval()
 
     # Dataset
-    h = model_cfg.get("input_height", 512)
-    w = model_cfg.get("input_width", 640)
+    h = model_cfg.get("input_height", 256)
+    w = model_cfg.get("input_width", 320)
     max_d = model_cfg.get("max_depth", 10.0)
     min_d = model_cfg.get("min_depth", 0.1)
 
-    data_path = data_cfg.get(f"{split}_path", data_cfg.get("test_path", ""))
-    dataset = ThermalDepthDataset(
-        root=data_path, height=h, width=w, augmentation=False,
-        max_depth=max_d, min_depth=min_d,
-    )
+    dataset_format = data_cfg.get("dataset_format", "vivid_pp")
+    if dataset_format == "vivid_pp":
+        root = data_cfg.get("root", "/mnt/forge-data/datasets/vivid_plus_plus")
+        dataset = VIVIDPlusPlusDataset(
+            root=root, split=split, height=h, width=w,
+            augmentation=False, max_depth=max_d, min_depth=min_d,
+        )
+    else:
+        data_path = data_cfg.get(f"{split}_path", data_cfg.get("test_path", ""))
+        dataset = ThermalDepthDataset(
+            root=data_path, height=h, width=w, augmentation=False,
+            max_depth=max_d, min_depth=min_d,
+        )
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
 
     all_metrics: list[dict[str, float]] = []

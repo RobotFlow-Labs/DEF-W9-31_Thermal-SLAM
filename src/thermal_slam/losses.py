@@ -101,7 +101,7 @@ class OrdinalDepthLoss(nn.Module):
         mask = target > 0
         b, c, h, w = pred.shape
 
-        total_loss = torch.tensor(0.0, device=pred.device, requires_grad=True)
+        total_loss = torch.tensor(0.0, device=pred.device)
         count = 0
 
         for i in range(b):
@@ -149,6 +149,7 @@ class EdgeAwareSmoothnessLoss(nn.Module):
     def forward(
         self, pred_depth: torch.Tensor, image: torch.Tensor
     ) -> torch.Tensor:
+        assert pred_depth.shape[1] == 1, f"Expected 1-channel depth, got {pred_depth.shape[1]}"
         # Normalize depth to mean=1 for scale invariance
         mean_depth = pred_depth.mean(dim=(2, 3), keepdim=True).clamp(min=1e-6)
         norm_depth = pred_depth / mean_depth

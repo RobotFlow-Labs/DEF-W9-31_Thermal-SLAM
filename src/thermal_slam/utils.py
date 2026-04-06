@@ -31,15 +31,21 @@ def load_config(path: str) -> dict:
 # Seeding
 # ---------------------------------------------------------------------------
 
-def set_seed(seed: int = 42) -> None:
-    """Set random seed for reproducibility."""
+def set_seed(seed: int = 42, deterministic: bool = False) -> None:
+    """Set random seed for reproducibility.
+
+    Args:
+        seed: Random seed value.
+        deterministic: If True, enforce deterministic ops (slower).
+            Default False for production training speed.
+    """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = deterministic
+        torch.backends.cudnn.benchmark = not deterministic
 
 
 # ---------------------------------------------------------------------------
@@ -63,8 +69,8 @@ class WarmupCosineScheduler:
         self.base_lrs = [pg["lr"] for pg in optimizer.param_groups]
         self.current_step = 0
 
-    def step(self) -> None:
-        self.current_step += 1
+    def _apply_lr(self) -> None:
+        """Apply LR for current_step without incrementing."""
         if self.current_step <= self.warmup_steps:
             scale = self.current_step / max(self.warmup_steps, 1)
         else:
@@ -76,6 +82,10 @@ class WarmupCosineScheduler:
         for pg, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
             pg["lr"] = max(self.min_lr, base_lr * scale)
 
+    def step(self) -> None:
+        self.current_step += 1
+        self._apply_lr()
+
     def get_lr(self) -> float:
         return self.optimizer.param_groups[0]["lr"]
 
@@ -84,6 +94,8 @@ class WarmupCosineScheduler:
 
     def load_state_dict(self, state: dict) -> None:
         self.current_step = state["current_step"]
+        # Re-apply LR for current step to sync with optimizer
+        self._apply_lr()
 
 
 # ---------------------------------------------------------------------------

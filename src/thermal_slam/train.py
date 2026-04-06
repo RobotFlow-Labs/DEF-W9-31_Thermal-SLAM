@@ -66,20 +66,23 @@ def _build_dataloaders(cfg: dict) -> tuple[DataLoader, DataLoader]:
     if isinstance(bs, str) and bs == "auto":
         bs = 4  # placeholder — replaced by batch finder at runtime
 
+    nw = train_cfg.get("num_workers", 4)
     train_loader = DataLoader(
         train_ds,
         batch_size=bs,
         shuffle=True,
-        num_workers=train_cfg.get("num_workers", 4),
+        num_workers=nw,
         pin_memory=train_cfg.get("pin_memory", True),
         drop_last=True,
+        persistent_workers=nw > 0,
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=bs,
         shuffle=False,
-        num_workers=train_cfg.get("num_workers", 4),
+        num_workers=nw,
         pin_memory=train_cfg.get("pin_memory", True),
+        persistent_workers=nw > 0,
     )
     return train_loader, val_loader
 
@@ -171,7 +174,7 @@ def train(cfg: dict, resume_path: str | None = None) -> None:
     start_epoch = 0
     global_step = 0
     if resume_path and os.path.isfile(resume_path):
-        ckpt = torch.load(resume_path, map_location=device, weights_only=False)
+        ckpt = torch.load(resume_path, map_location=device, weights_only=True)
         model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
         scheduler.load_state_dict(ckpt["scheduler"])
@@ -245,8 +248,8 @@ def train(cfg: dict, resume_path: str | None = None) -> None:
                 thermal = batch["thermal"].to(device)
                 depth_gt = batch["depth"].to(device)
                 with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp):
-                    out = model(thermal)
-                    loss_dict = criterion(out["depth"], depth_gt)
+                    out = model(thermal, return_refined=True)
+                    loss_dict = criterion(out["depth"], depth_gt, image=out.get("normalized"))
                 val_loss += loss_dict["total"].item()
         avg_val_loss = val_loss / max(len(val_loader), 1)
 

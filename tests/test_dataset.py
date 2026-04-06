@@ -21,19 +21,20 @@ from thermal_slam.losses import (
 
 
 class TestThermalDepthDataset:
-    def test_synthetic_fallback(self) -> None:
-        """Dataset should produce synthetic data when no files exist."""
-        ds = ThermalDepthDataset(
-            root="/tmp/nonexistent_thermal_data",
-            height=64,
-            width=80,
-        )
-        assert len(ds) >= 1
-        sample = ds[0]
-        assert "thermal" in sample
-        assert "depth" in sample
-        assert sample["thermal"].shape == (1, 64, 80)
-        assert sample["depth"].shape == (1, 64, 80)
+    def test_empty_dataset_warns(self) -> None:
+        """Empty dataset should have len 0 and warn."""
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            ds = ThermalDepthDataset(
+                root="/tmp/nonexistent_thermal_data",
+                height=64,
+                width=80,
+            )
+            _ = len(ds)
+            assert len(ds) == 0
+            assert any("no samples" in str(warning.message).lower() for warning in w)
 
     def test_split_indices(self) -> None:
         split = create_split_indices(100, train_ratio=0.9, val_ratio=0.05, seed=42)
@@ -52,20 +53,21 @@ class TestThermalDepthDataset:
 
 
 class TestVIVIDPlusPlusDataset:
-    def test_synthetic_fallback(self) -> None:
-        """Dataset should produce synthetic data when no files exist."""
-        ds = VIVIDPlusPlusDataset(
-            root="/tmp/nonexistent_vivid",
-            split="train",
-            height=64,
-            width=80,
-        )
-        assert len(ds) >= 1
-        sample = ds[0]
-        assert "thermal" in sample
-        assert "depth" in sample
-        assert sample["thermal"].shape == (1, 64, 80)
-        assert sample["depth"].shape == (1, 64, 80)
+    def test_empty_dataset_warns(self) -> None:
+        """Empty dataset should have len 0 and warn."""
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            ds = VIVIDPlusPlusDataset(
+                root="/tmp/nonexistent_vivid",
+                split="train",
+                height=64,
+                width=80,
+            )
+            _ = len(ds)
+            assert len(ds) == 0
+            assert any("no samples" in str(warning.message).lower() for warning in w)
 
     @pytest.mark.skipif(
         not __import__("pathlib").Path(

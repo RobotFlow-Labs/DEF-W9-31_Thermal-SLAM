@@ -45,7 +45,7 @@ def _load_model(config_path: str, checkpoint_path: str | None = None) -> None:
     model.eval()
 
     if checkpoint_path and os.path.isfile(checkpoint_path):
-        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=True)
         if "model" in ckpt:
             model.load_state_dict(ckpt["model"])
         else:
@@ -97,8 +97,12 @@ def info() -> dict:
     }
 
 
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+MAX_RESOLUTION = 2048
+
+
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)) -> dict:
+async def predict(file: UploadFile = File(...)) -> dict:  # noqa: B008
     """Run depth estimation on uploaded thermal image.
 
     Accepts .npy (16-bit float32 array) or raw bytes.
@@ -108,17 +112,31 @@ async def predict(file: UploadFile = File(...)) -> dict:
         return JSONResponse({"error": "Model not loaded"}, status_code=503)
 
     contents = await file.read()
+    if len(contents) > MAX_UPLOAD_BYTES:
+        return JSONResponse({"error": "File too large"}, status_code=413)
+
     buf = io.BytesIO(contents)
 
     # Load as numpy array
     try:
-        thermal_np = np.load(buf).astype(np.float32)
+        thermal_np = np.load(buf, allow_pickle=False).astype(np.float32)
     except Exception:
         # Try loading as raw image
         import cv2
 
         arr = np.frombuffer(contents, np.uint8)
-        thermal_np = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED).astype(np.float32)
+        img = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            return JSONResponse({"error": "Cannot decode image"}, status_code=400)
+        thermal_np = img.astype(np.float32)
+
+    # Validate resolution
+    h, w = thermal_np.shape[:2]
+    if h > MAX_RESOLUTION or w > MAX_RESOLUTION:
+        return JSONResponse(
+            {"error": f"Resolution {w}x{h} exceeds limit {MAX_RESOLUTION}"},
+            status_code=400,
+        )
 
     if thermal_np.ndim == 2:
         thermal_np = thermal_np[np.newaxis, np.newaxis, :, :]

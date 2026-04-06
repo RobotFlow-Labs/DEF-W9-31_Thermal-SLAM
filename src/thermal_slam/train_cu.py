@@ -140,16 +140,19 @@ def _build_dataloaders(cfg: dict) -> tuple[DataLoader, DataLoader]:
     if isinstance(bs, str) and bs == "auto":
         bs = 4
 
+    nw = train_cfg.get("num_workers", 4)
     train_loader = DataLoader(
         train_ds, batch_size=bs, shuffle=True,
-        num_workers=train_cfg.get("num_workers", 4),
+        num_workers=nw,
         pin_memory=train_cfg.get("pin_memory", True),
         drop_last=True,
+        persistent_workers=nw > 0,
     )
     val_loader = DataLoader(
         val_ds, batch_size=bs, shuffle=False,
-        num_workers=train_cfg.get("num_workers", 4),
+        num_workers=nw,
         pin_memory=train_cfg.get("pin_memory", True),
+        persistent_workers=nw > 0,
     )
     return train_loader, val_loader
 
@@ -272,7 +275,7 @@ def train(cfg: dict, resume_path: str | None = None) -> None:
     global_step = 0
     if resume_path and os.path.isfile(resume_path):
         ckpt = torch.load(
-            resume_path, map_location=device, weights_only=False
+            resume_path, map_location=device, weights_only=True
         )
         model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
@@ -404,8 +407,8 @@ def train(cfg: dict, resume_path: str | None = None) -> None:
                 with torch.amp.autocast(
                     "cuda", dtype=amp_dtype, enabled=use_amp
                 ):
-                    out = model(thermal)
-                    vl = criterion(out["depth"], depth_gt)
+                    out = model(thermal, return_refined=True)
+                    vl = criterion(out["depth"], depth_gt, image=out.get("normalized"))
                 val_loss += vl["total"].item()
                 val_count += 1
         avg_val_loss = val_loss / max(val_count, 1)
