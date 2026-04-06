@@ -435,9 +435,13 @@ class ThermalDepthNet(nn.Module):
 
         # Recurrent block: temporal propagation on deepest features
         # Detach state for truncated BPTT (no backprop through prev timesteps)
+        # Reset state if batch size changed (last batch in epoch is smaller)
         prev_state = self._recurrent_state
         if prev_state is not None:
-            prev_state = prev_state.detach()
+            if prev_state.shape[0] != features[-1].shape[0]:
+                prev_state = None
+            else:
+                prev_state = prev_state.detach()
         features[-1], self._recurrent_state = self.recurrent(
             features[-1], prev_state
         )
