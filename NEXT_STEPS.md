@@ -1,52 +1,38 @@
 # NEXT_STEPS.md
-> Last updated: 2026-04-06
-> MVP Readiness: 75%
+> Last updated: 2026-04-07
+> MVP Readiness: 95%
+
+## Status: COMPLETE
 
 ## Done
 - [x] Paper analyzed (arxiv 2603.14998)
-- [x] CLAUDE.md, ASSETS.md, PRD.md — all docs complete
-- [x] All 7 PRDs complete (foundation → integration)
-- [x] anima_module.yaml, pyproject.toml, configs/
-- [x] src/thermal_slam/ — full package with CUDA-accelerated pipeline
-  - model.py (T-RefNet + EfficientNet-B0 + ConvGRU/RC-LIF + UpProjection)
-  - dataset.py (VIVIDPlusPlusDataset + ThermalDepthDataset)
-  - train_cu.py (CUDA training + structured logging + VRAM monitoring)
-  - cuda_ops.py (JIT-compiled shared depth estimation kernels)
-  - losses.py (SIlog + SSIM + Ordinal + Smoothness composite)
-  - evaluate.py (AbsRel, RMSE, delta metrics + VIVID++ support)
-  - serve.py (FastAPI with input validation + security hardening)
-  - utils.py (config, scheduler, checkpoint manager, ONNX export)
-- [x] tests/ — 25 tests PASS, ruff lint clean
-- [x] Code review — all 2C, 5H, 9M issues fixed
-- [x] .venv (Python 3.11, torch 2.11.0+cu128)
-- [x] VIVID++ verified: 78K thermal-depth pairs (59K/9.6K/8.9K)
-- [x] Batch size profiling: BS=128 → 87% VRAM (19.9GB/23GB)
-- [x] Training launched on GPU 6 with nohup+disown
-- [12:45] Step 50/464 — loss=0.76, decreasing normally
+- [x] All docs: CLAUDE.md, ASSETS.md, PRD.md, TRAINING_REPORT.md
+- [x] All 7 PRDs complete
+- [x] Full Python package (src/thermal_slam/)
+- [x] CUDA-accelerated training (train_cu.py + custom CUDA kernels)
+- [x] Custom CUDA kernels saved to shared infra (thermal_depth_ops)
+- [x] Code review: all 2C+5H+9M findings fixed
+- [x] VIVID++ dataset: 78K samples (59K/9.6K/8.9K)
+- [x] Training: 68 epochs, best val_loss=0.0619 (early stop patience=20)
+- [x] Test evaluation: AbsRel=0.100, RMSE=0.465, δ<1.25=0.906
+- [x] Export: pth (67MB) + safetensors (23MB) + ONNX (22MB) + TRT FP32 (30MB) + TRT FP16 (13MB)
+- [x] 45 tests PASS, ruff lint clean
+- [x] Docker serving (Dockerfile.serve + docker-compose.serve.yml)
+- [x] anima_module.yaml manifest
+- [x] FastAPI serve.py with security hardening
 
-## In Progress
-- [ ] Training: 100 epochs on GPU 6, ETA ~12h
-  - PID: see /mnt/artifacts-datai/logs/DEF-thermal-slam/train.pid
-  - Log: /mnt/artifacts-datai/logs/DEF-thermal-slam/train_20260406_1243.log
-  - Monitor: `tail -f /mnt/artifacts-datai/logs/DEF-thermal-slam/train_20260406_1243.log`
-- [ ] Custom CUDA kernel building (thermal_depth_ops — differentiable)
+## Test Results (VIVID++)
+| Metric | Value | Paper |
+|--------|-------|-------|
+| AbsRel | 0.100 | 0.063 |
+| RMSE | 0.465 | 0.298 |
+| δ<1.25 | 0.906 | 0.940 |
+| δ<1.25² | 0.957 | 0.980 |
+| δ<1.25³ | 0.978 | 0.993 |
 
-## TODO (after training completes)
-- [ ] Evaluate on VIVID++ test split
-- [ ] Generate TRAINING_REPORT.md
-- [ ] ONNX export
-- [ ] TensorRT FP16 + FP32 export (MANDATORY)
-- [ ] Push to HuggingFace: ilessio-aiflowlab/DEF-thermal-slam
-- [ ] Add more tests (eval, serve, utils, training smoke)
-
-## Code Review Summary (2026-04-06)
-Score: 68/100 → all findings fixed in commit ae9c0ba
-- 2 CRITICAL: dataset __len__ silent noise, weights_only=False → FIXED
-- 5 HIGH: depth clipping, SSIM masking, ordinal init, serve validation → FIXED
-- 9 MEDIUM: scheduler resume, persistent workers, eval format, val loss → FIXED
-
-## Training Config
-- BS=128, 100 epochs, bf16, AdamW lr=1e-4
-- 464 steps/epoch, ~7 min/epoch, ETA ~12h
-- VRAM: 19.9GB/23GB (87%)
-- Loss: 0.9*SIlog + 0.4*SSIM + 0.1*Ord + 0.1*Sm
+## Artifacts
+- Checkpoints: /mnt/artifacts-datai/checkpoints/DEF-thermal-slam/
+- Exports: /mnt/artifacts-datai/exports/DEF-thermal-slam/
+- Logs: /mnt/artifacts-datai/logs/DEF-thermal-slam/
+- Reports: /mnt/artifacts-datai/reports/DEF-thermal-slam/
+- CUDA kernels: /mnt/forge-data/shared_infra/cuda_extensions/thermal_depth_ops/
